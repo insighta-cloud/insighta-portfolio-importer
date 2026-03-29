@@ -484,26 +484,43 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
                     group_map[(d_key, d.cur)] = og
                 ts = ""
                 if d.dt:
+                    import re as _re
                     try:
-                        dt_obj = datetime.strptime(d.dt, "%Y/%m/%d %H:%M").replace(tzinfo=tz)
+                        if _re.match(r"\d{4}-\d{2}-\d{2}T", d.dt):
+                            dt_obj = datetime.fromisoformat(d.dt)
+                            if dt_obj.tzinfo is None:
+                                dt_obj = dt_obj.replace(tzinfo=tz)
+                        elif _re.match(r"\d{4}/\d+/\d+ \d+:\d+", d.dt):
+                            dt_obj = datetime.strptime(d.dt, "%Y/%m/%d %H:%M").replace(tzinfo=tz)
+                        else:
+                            dt_obj = datetime.strptime(d.dt[:10], "%Y/%m/%d").replace(tzinfo=tz)
                         ts = dt_obj.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                    except ValueError:
-                        try:
-                            dt_obj = datetime.strptime(d.dt, "%Y/%m/%d").replace(tzinfo=tz)
-                            ts = dt_obj.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                        except ValueError:
-                            pass
+                    except (ValueError, AttributeError):
+                        pass
                 w.writerow([og, d.type, float(d.amount), d.cur, d.ticker, ts])
 
-    # --- Build portfolio items (均等配分) ---
+    # --- Build portfolio items ---
+    from .api import fetch_ticker_info
     ticker_qty: dict[str, int] = {}
     for r in rows:
         t = r["ticker"]
         ticker_qty[t] = ticker_qty.get(t, 0) + int(r["qty"])
     active_tickers = sorted(t for t, q in ticker_qty.items() if q > 0)
     equal_ratio = round(1.0 / len(active_tickers), 4) if active_tickers else 0
+    try:
+        ticker_info = fetch_ticker_info(active_tickers)
+    except Exception:
+        ticker_info = {}
     portfolio_items = [
-        {"ticker": t, "type": "stock", "quantity": ticker_qty[t], "ratio": equal_ratio, "price": 0}
+        {
+            "ticker": t,
+            "type": ticker_info.get(t, {}).get("type", "stock"),
+            "quantity": ticker_qty[t],
+            "ratio": equal_ratio,
+            "price": 0,
+            "sector": ticker_info.get(t, {}).get("sector", "N/A"),
+            "industry": ticker_info.get(t, {}).get("industry", "N/A"),
+        }
         for t in active_tickers
     ]
 
@@ -732,9 +749,11 @@ def upload(credentials, config, yes, lang, memo_file, output_json):
                         detail = e.response.text
                     console.print(f"[red]   {detail}[/red]")
                 failed += 1
+                break
             except Exception as e:
                 console.print(f"[red]Group {group.group_id} failed: {e}[/red]")
                 failed += 1
+                break
             progress.advance(task)
             progress.update(task, description=f"注文送信中... {i}/{total}")
             if group != groups[-1]:

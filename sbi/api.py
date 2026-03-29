@@ -149,10 +149,39 @@ def load_cash_deposits(filepath: str) -> dict[str, list[CashDeposit]]:
 
 
 def merge_cash_deposits(groups: list[OrderGroup], deposits_by_group: dict[str, list[CashDeposit]]):
-    """order group에 cash_deposits를 매핑."""
+    """order group에 cash_deposits를 매핑. 매칭 안 되는 deposit은 새 그룹으로 생성."""
+    existing_ids = {g.group_id for g in groups}
     for group in groups:
         if group.group_id in deposits_by_group:
             group.cash_deposits = deposits_by_group[group.group_id]
+    for gid, deps in deposits_by_group.items():
+        if gid not in existing_ids:
+            cur = deps[0].currency or "USD"
+            groups.append(OrderGroup(group_id=gid, currency=cur, cash_deposits=deps))
+
+    def _sort_key(g: OrderGroup):
+        if g.items and g.items[0]["timestamp"]:
+            return g.items[0]["timestamp"]
+        if g.cash_deposits and g.cash_deposits[0].timestamp:
+            return g.cash_deposits[0].timestamp
+        return float("inf")
+
+    groups.sort(key=_sort_key)
+    for i, g in enumerate(groups, 1):
+        g.group_id = str(i)
+
+
+def fetch_ticker_info(tickers: list[str]) -> dict[str, dict]:
+    """Insighta /tickers/info API로 sector/industry/type 조회."""
+    if not tickers:
+        return {}
+    resp = requests.get(
+        "https://api.insighta.cloud/tickers/info",
+        params={"tickers": ",".join(tickers), "conditions": "sector,industry,type"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 
 class InsightaClient:
@@ -184,6 +213,8 @@ class InsightaClient:
                 "quantity": float(item.get("quantity", 0)),
                 "ratio": float(item.get("ratio", 0)),
                 "price": float(item.get("price", 0)),
+                "sector": str(item.get("sector", "N/A")),
+                "industry": str(item.get("industry", "N/A")),
             }
             for item in config.items
         ]
