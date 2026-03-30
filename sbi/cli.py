@@ -492,7 +492,23 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
         t = r["ticker"]
         ticker_qty[t] = ticker_qty.get(t, 0) + int(r["qty"])
     active_tickers = sorted(t for t, q in ticker_qty.items() if q > 0)
-    equal_ratio = round(1.0 / len(active_tickers), 4) if active_tickers else 0
+
+    # Load ratio.csv if exists
+    custom_ratios: dict[str, float] = {}
+    ratio_file = "input/ratio.csv"
+    try:
+        with open(ratio_file, "r", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                custom_ratios[row["ticker"]] = float(row["ratio"])
+    except FileNotFoundError:
+        pass
+
+    assigned = {t: custom_ratios[t] for t in active_tickers if t in custom_ratios}
+    unassigned = [t for t in active_tickers if t not in custom_ratios]
+    remaining = round(1.0 - sum(assigned.values()), 4)
+    fallback = round(remaining / len(unassigned), 4) if unassigned else 0
+    ratios = {**assigned, **{t: fallback for t in unassigned}}
+
     try:
         ticker_info = fetch_ticker_info(active_tickers)
     except Exception:
@@ -502,7 +518,7 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
             "ticker": t,
             "type": ticker_info.get(t, {}).get("type", "stock"),
             "quantity": ticker_qty[t],
-            "ratio": equal_ratio,
+            "ratio": ratios[t],
             "price": 0,
             "sector": ticker_info.get(t, {}).get("sector", "N/A"),
             "industry": ticker_info.get(t, {}).get("industry", "N/A"),
