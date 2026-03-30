@@ -1,5 +1,7 @@
 # insighta Portfolio Importer
 
+> 🤖 AI エージェントで操作する場合は [README.ai.md](README.ai.md) を参照してください。
+
 [Insighta Cloud](https://insighta.cloud) へのポートフォリオ一括登録を支援するCLIツールです。
 証券会社の取引履歴から注文データを抽出し、検証・分析したうえで Insighta API へまとめてアップロードできます。
 
@@ -9,8 +11,6 @@
 - **アップロード**: Insighta API へポートフォリオデータを一括送信
 
 > ⚠️ 現在はSBI証券の海外株式口座のみ対応しています。
-
-> 🤖 AI エージェントで操作する場合は [README.ai.md](README.ai.md) を参照してください。`--non-interactive` モードでプロンプトなし実行できます。
 
 ## このツールはこんな方向けです
 

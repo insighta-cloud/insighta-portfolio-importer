@@ -741,6 +741,7 @@ def upload(credentials, config, yes, lang, memo_file, output_json):
                 client.send_order(portfolio_id, group, upload_cfg.currency)
                 success += 1
             except requests.exceptions.HTTPError as e:
+                progress.stop()
                 console.print(f"[red]Group {group.group_id} failed: {e}[/red]")
                 if e.response is not None:
                     try:
@@ -748,9 +749,12 @@ def upload(credentials, config, yes, lang, memo_file, output_json):
                     except Exception:
                         detail = e.response.text
                     console.print(f"[red]   {detail}[/red]")
+                import json as _json
+                console.print(f"[dim]Payload: {_json.dumps(client._last_payload, ensure_ascii=False, indent=2)}[/dim]")
                 failed += 1
                 break
             except Exception as e:
+                progress.stop()
                 console.print(f"[red]Group {group.group_id} failed: {e}[/red]")
                 failed += 1
                 break

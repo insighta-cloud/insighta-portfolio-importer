@@ -199,6 +199,7 @@ class InsightaClient:
         log.debug("%s %s", method, url)
         if "json" in kwargs:
             log.debug("Request body: %s", kwargs["json"])
+            self._last_payload = kwargs["json"]
         resp = requests.request(method, url, headers=self.headers, timeout=30, **kwargs)
         log.debug("Response %s: %s", resp.status_code, resp.text)
         resp.raise_for_status()
