@@ -124,6 +124,8 @@ order_group,memo
 5,公益→金融へセクターローテーション 利上げ局面で金融セクター有利と判断
 ```
 
+ファイルは `output/memo.csv` に保存してください。
+
 ### Writing Good Memos
 
 メモは「何を買った/売った」ではなく、**その時点での運用判断の根拠** を記載してください。
@@ -164,7 +166,7 @@ insighta prepare -ni --name "My Portfolio" --currency JPY --budget 100000
 # 2. order.csv を確認して memo.csv を作成
 
 # 3. upload 時に memo.csv を適用
-insighta upload --credentials credentials.yaml --config upload.yaml --memo-file memo.csv -y
+insighta upload --credentials credentials.yaml --config upload.yaml --memo-file output/memo.csv -y
 ```
 
 ## JSON Output
@@ -255,7 +257,7 @@ insighta wizard -ni \
 insighta upload \
   --credentials credentials.yaml \
   --config upload.yaml \
-  --memo-file memo.csv \
+  --memo-file output/memo.csv \
   -y --output-json
 
 # 7. Parse JSON result from stdout

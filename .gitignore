@@ -10,6 +10,8 @@ credentials.yaml
 !templates/credentials.yaml
 upload.yaml
 .insighta.yaml
+memo.csv
+!templates/memo.csv
 
 __pycache__/
 *.pyc
