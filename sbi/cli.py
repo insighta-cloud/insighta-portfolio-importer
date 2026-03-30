@@ -687,7 +687,8 @@ def upload(credentials, config, yes, lang, memo_file, output_json):
         except FileNotFoundError:
             console.print(f"[yellow]Warning: {upload_cfg.cash_deposits_file} not found, skipping.[/yellow]")
 
-    total_items = sum(len(g.items) for g in groups)
+    order_groups = [g for g in groups if g.items]
+    total_items = sum(len(g.items) for g in order_groups)
     total_deposits = sum(len(g.cash_deposits) for g in groups)
 
     # --- 전송 전 최종 확인 ---
@@ -699,9 +700,10 @@ def upload(credentials, config, yes, lang, memo_file, output_json):
     info.add_row("タイプ", upload_cfg.portfolio_type)
     info.add_row("通貨", upload_cfg.currency)
     info.add_row("初期予算", f"{float(upload_cfg.budget):,.2f}")
-    info.add_row("注文", f"{total_items} 件 / {len(groups)} グループ")
+    info.add_row("注文グループ", f"{total_items} 件")
     if total_deposits:
-        info.add_row("Cash Deposits", f"{total_deposits} 件")
+        info.add_row("入金 / 配当", f"{total_deposits} 件")
+    info.add_row("送信グループ", f"{len(groups)} 件")
     info.add_row("API Key", f"[dim]{creds.masked_key}[/dim]")
     info.add_row("送信先", f"[dim]{creds.endpoint}[/dim]")
     console.print(Panel(info))
