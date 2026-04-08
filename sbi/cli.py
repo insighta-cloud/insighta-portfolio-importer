@@ -1,6 +1,7 @@
 """insighta-portfolio-importer CLI"""
 
 import glob
+import os as _os
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -20,16 +21,20 @@ click.rich_click.STYLE_COMMANDS_TABLE_COLUMN_WIDTH_RATIO = (1, 2)
 @click.group(invoke_without_command=True)
 @click.version_option("0.1.0", prog_name="insighta-portfolio-importer")
 @click.option("--debug", is_flag=True, help="デバッグモード (APIリクエスト/レスポンスを表示)")
+@click.option("--work", default="", help="作業ディレクトリ (例: --work my-portfolio)")
 @click.pass_context
-def cli(ctx, debug):
+def cli(ctx, debug, work):
     """SBI証券のHTMLから保有銘柄・取引履歴をパースし、CSVに変換するツール。"""
     import logging
+    from .parser import Dirs
     level = logging.DEBUG if debug else logging.WARNING
     logging.basicConfig(
         level=level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    ctx.ensure_object(dict)
+    ctx.obj["dirs"] = Dirs.from_work(work)
     if ctx.invoked_subcommand is None:
         ctx.invoke(wizard)
 
@@ -37,14 +42,21 @@ def cli(ctx, debug):
 @cli.command()
 @click.option("--rate", default="", help="固定為替レート (例: 155.12)")
 @click.option("--rate-file", default="", help="期間別為替レートCSV (例: input/rate.csv)")
-def parse(rate, rate_file):
+@click.pass_obj
+def parse(obj, rate, rate_file):
     """取引履歴HTMLをパースし、CSVを生成する。"""
     import csv
     from rich.table import Table
     from rich.panel import Panel
-    from .parser import find_htmls, parse_history_html, load_rate_file, lookup_rate, OUTPUT_DIR
+    from .parser import find_htmls, parse_history_html, load_rate_file, lookup_rate
 
-    htmls = find_htmls("history")
+    dirs = obj["dirs"]
+    dirs.ensure_output()
+
+    if not rate_file and _os.path.exists(dirs.rate_csv):
+        rate_file = dirs.rate_csv
+
+    htmls = find_htmls("history", dirs)
     rates = load_rate_file(rate_file) if rate_file else []
 
     all_trades, all_skipped = [], {}
@@ -64,7 +76,7 @@ def parse(rate, rate_file):
 
     deduped.sort(key=lambda t: t.dt, reverse=True)
 
-    out = f"{OUTPUT_DIR}/history.csv"
+    out = dirs.history_csv
     with open(out, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["dt", "ticker", "qty", "acct", "price", "avg", "cur", "base", "rate"])
@@ -92,14 +104,14 @@ def parse(rate, rate_file):
     console.print(Panel(f"[bold green]{out}[/bold green] 生成完了  {rate_info}"))
 
 
-def _run_verify() -> bool:
+def _run_verify(dirs) -> bool:
     """CSV集計とHTML実際保有を照合する。一致ならTrue、差分ありならFalse。"""
     from decimal import Decimal
     from rich.table import Table
     from rich.panel import Panel
     from .parser import load_csv_rows, aggregate_holdings, parse_summary_html, find_htmls, load_deposits
 
-    rows = load_csv_rows()
+    rows = load_csv_rows(dirs)
     holdings = aggregate_holdings(rows)
 
     by_acct: dict[str, list[tuple[str, int]]] = {}
@@ -110,7 +122,7 @@ def _run_verify() -> bool:
 
     actual: dict[tuple[str, str], int] = {}
     prices: dict[str, dict] = {}
-    for sf in find_htmls("summary"):
+    for sf in find_htmls("summary", dirs):
         for h in parse_summary_html(sf):
             actual[(h.ticker, h.acct)] = h.qty
             prices[h.ticker] = {"cost": h.cost, "price": h.price, "pnl": h.pnl}
@@ -174,7 +186,7 @@ def _run_verify() -> bool:
     # --- 残高検証: 入金/売買を時系列で追い、通貨別残高がマイナスになる区間を検出 ---
     events: list[tuple[str, str, Decimal, str]] = []  # (dt, label, amount, currency)
     rate_missing: list[tuple[str, str, int, str, str]] = []  # (dt, ticker, qty, cur, base)
-    for d in load_deposits():
+    for d in load_deposits(dirs):
         events.append((d.dt, f"{d.type} {d.ticker}".strip(), d.amount, d.cur))
     for r in rows:
         dt, ticker = r["dt"], r["ticker"]
@@ -260,9 +272,10 @@ def _load_memo_file(path: str) -> dict[str, str]:
 
 
 @cli.command()
-def verify():
+@click.pass_obj
+def verify(obj):
     """CSV集計とHTML実際保有を照合する。"""
-    _run_verify()
+    _run_verify(obj["dirs"])
 
 
 @cli.command()
@@ -278,7 +291,8 @@ def verify():
 @click.option("--target-return", "p_target_return", type=float, default=0, hidden=True)
 @click.option("--start-date", "p_start_date", default="", hidden=True)
 @click.option("--target-date", "p_target_date", default="", hidden=True)
-def prepare(locale, history_file, seed_file, rate_file, non_interactive,
+@click.pass_obj
+def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
            p_name, p_desc, p_currency, p_budget, p_target_return, p_start_date, p_target_date):
     """対話式でupload.yaml + order.csvを生成する。"""
     import csv
@@ -289,7 +303,8 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
     from .parser import load_rate_file, lookup_rate, load_deposits
     from .i18n import load_locale, msg
     from datetime import timezone, timedelta
-    OUTPUT_DIR = "output"
+    dirs = obj["dirs"]
+    dirs.ensure_output()
     if not locale:
         locale = load_locale() or "ja"
     m = msg(locale)
@@ -312,7 +327,7 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
     def _earliest_date() -> str:
         import csv as _csv, re as _re
         dates = []
-        for fpath in [history_file or "output/history.csv", seed_file or "input/seed/seed.csv"]:
+        for fpath in [history_file or dirs.history_csv, seed_file or f"{dirs.seed}/seed.csv"]:
             try:
                 with open(fpath, "r", encoding="utf-8") as f:
                     for row in _csv.DictReader(f):
@@ -321,8 +336,7 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
                             dates.append(dt)
             except FileNotFoundError:
                 pass
-        for d in load_deposits():
-            dt = d.dt[:10].replace("/", "-")
+        for d in load_deposits(dirs):
             if _re.match(r"\d{4}-\d{2}-\d{2}", dt):
                 dates.append(dt)
         return min(dates) if dates else today
@@ -343,11 +357,11 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
     target_date = p_target_date or _prompt(m["prepare_target_date"], default=target_date_default)
 
     if not history_file:
-        history_file = _prompt(m["prepare_history"], default="output/history.csv")
+        history_file = _prompt(m["prepare_history"], default=dirs.history_csv)
     if not seed_file:
-        seed_file = _prompt(m["prepare_seed"], default="input/seed/seed.csv")
+        seed_file = _prompt(m["prepare_seed"], default=f"{dirs.seed}/seed.csv")
     if not rate_file:
-        rate_file = _prompt(m["prepare_rate"], default="input/rate.csv")
+        rate_file = _prompt(m["prepare_rate"], default=dirs.rate_csv)
 
     do_group = _confirm(m["prepare_group"], default=True)
     if do_group:
@@ -448,7 +462,7 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
     order_rows = sorted(merged_rows.values(), key=lambda r: r["timestamp"] or "")
 
     # --- Write order.csv ---
-    order_out = f"{OUTPUT_DIR}/order.csv"
+    order_out = dirs.order_csv
     with open(order_out, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["group_dt", "ticker", "quantity", "price", "currency", "settle_currency", "rate", "price_type", "timestamp"])
@@ -459,10 +473,10 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
             ])
 
     # --- Write cash_deposits.csv ---
-    deposits = load_deposits()
+    deposits = load_deposits(dirs)
     cash_deposits_out = ""
     if deposits:
-        cash_deposits_out = f"{OUTPUT_DIR}/cash_deposits.csv"
+        cash_deposits_out = dirs.cash_deposits_csv
         with open(cash_deposits_out, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["group_dt", "type", "amount", "currency", "ticker", "timestamp"])
@@ -496,7 +510,7 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
     # Load ratio.csv if exists, otherwise equal distribution
     ratios: dict[str, float] = {}
     try:
-        with open("input/ratio.csv", "r", encoding="utf-8") as f:
+        with open(dirs.ratio_csv, "r", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 ratios[row["ticker"]] = float(row["ratio"])
     except FileNotFoundError:
@@ -521,7 +535,7 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
     ]
 
     # --- Write upload.yaml ---
-    memo_out = f"{OUTPUT_DIR}/memo.csv"
+    memo_out = dirs.memo_csv
     files_config = {"order": order_out, "memo": memo_out}
     if cash_deposits_out:
         files_config["cash_deposits"] = cash_deposits_out
@@ -539,7 +553,7 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
         },
         "files": files_config,
     }
-    yaml_out = f"{OUTPUT_DIR}/upload.yaml"
+    yaml_out = dirs.upload_yaml
     with open(yaml_out, "w", encoding="utf-8") as f:
         yaml.dump(upload_config, f, allow_unicode=True, default_flow_style=False)
 
@@ -593,7 +607,7 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
             group_memos[g.group_id] = memo
 
     # --- Write memo.csv (group_id = 순번, merge_and_sort_groups 기준) ---
-    memo_out = f"{OUTPUT_DIR}/memo.csv"
+    memo_out = dirs.memo_csv
     with open(memo_out, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["order_group", "memo"])
@@ -604,7 +618,7 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
 
     # --- Dump request payloads to log ---
     import json as _json
-    log_path = f"{OUTPUT_DIR}/request_payload.log"
+    log_path = dirs.request_payload_log
     with open(log_path, "w", encoding="utf-8") as lf:
         # portfolio creation
         portfolio_body = {
@@ -655,16 +669,20 @@ def prepare(locale, history_file, seed_file, rate_file, non_interactive,
 @click.option("--lang", default="ja", hidden=True)
 @click.option("--memo-file", default="", help="グループ別メモCSV (order_group,memo)")
 @click.option("--output-json", is_flag=True, help="結果をJSONで出力")
-def upload(credentials, config, yes, lang, memo_file, output_json):
+@click.pass_obj
+def upload(obj, credentials, config, yes, lang, memo_file, output_json):
     """アップロード: upload.yaml + order.csvをInsighta APIに送信する。"""
     from rich.table import Table
     from rich.panel import Panel
     from rich.progress import Progress
     from .api import Credentials, UploadConfig, InsightaClient, load_order_groups, load_cash_deposits, merge_and_sort_groups
 
+    dirs = obj["dirs"]
+    dirs.ensure_output()
+
     creds = Credentials.from_file(credentials)
     upload_cfg = UploadConfig.from_file(config)
-    client = InsightaClient(creds)
+    client = InsightaClient(creds, output_dir=dirs.output)
 
     memo_path = memo_file or upload_cfg.memo_file
     memos = {}
@@ -681,9 +699,7 @@ def upload(credentials, config, yes, lang, memo_file, output_json):
         return
 
     # 실제 전송 로그 초기화
-    import os
-    os.makedirs("output", exist_ok=True)
-    with open("output/request_payload.log", "w", encoding="utf-8") as _lf:
+    with open(dirs.request_payload_log, "w", encoding="utf-8") as _lf:
         pass
 
     deposits = {}
@@ -813,13 +829,15 @@ def upload(credentials, config, yes, lang, memo_file, output_json):
 @click.option("--target-date", "p_target_date", default="", help="目標日 (YYYY-MM-DD)")
 @click.option("--credentials", "cred_path_opt", default="", help="credentials.yaml パス")
 @click.option("--output-json", is_flag=True, help="結果をJSONで出力")
-def wizard(non_interactive, p_name, p_desc, p_currency, p_budget, p_target_return,
+@click.pass_obj
+def wizard(obj, non_interactive, p_name, p_desc, p_currency, p_budget, p_target_return,
           p_start_date, p_target_date, cred_path_opt, output_json):
     """対話式ウィザードで全ステップを順番に実行する。"""
     import os
     from rich.panel import Panel
     from rich.table import Table
     from .i18n import load_locale, save_locale, msg
+    dirs = obj["dirs"]
     ni = non_interactive
 
     def _confirm(label, default=True):
@@ -874,8 +892,8 @@ def wizard(non_interactive, p_name, p_desc, p_currency, p_budget, p_target_retur
         click.prompt(m["press_enter"], default="", show_default=False, prompt_suffix="")
 
     # --- Check for previous results ---
-    history_csv_exists = os.path.exists("output/history.csv")
-    prepare_exists = os.path.exists("output/upload.yaml") and os.path.exists("output/order.csv")
+    history_csv_exists = os.path.exists(dirs.history_csv)
+    prepare_exists = os.path.exists(dirs.upload_yaml) and os.path.exists(dirs.order_csv)
 
     skip_parse = False
     skip_prepare = False
@@ -889,10 +907,10 @@ def wizard(non_interactive, p_name, p_desc, p_currency, p_budget, p_target_retur
         skip_parse = True
         console.print(m["resume_reuse"])
 
-    seed_files = glob.glob("input/seed/*.csv")
-    rate_exists = os.path.exists("input/rate.csv")
+    seed_files = glob.glob(f"{dirs.seed}/*.csv")
+    rate_exists = os.path.exists(dirs.rate_csv)
     if rate_exists:
-        rate_file = "input/rate.csv"
+        rate_file = dirs.rate_csv
 
     # ループで Step 1 ↔ Step 2 を行き来できるようにする
     if not skip_parse:
@@ -908,8 +926,8 @@ def wizard(non_interactive, p_name, p_desc, p_currency, p_budget, p_target_retur
             # === Step 2 ===
             console.print(Panel(f"[bold cyan]{m['step2_title']}[/bold cyan]", border_style="cyan"))
 
-            history_files = glob.glob("input/history/*.html")
-            summary_files = glob.glob("input/summary/*.html")
+            history_files = glob.glob(f"{dirs.history}/*.html")
+            summary_files = glob.glob(f"{dirs.summary}/*.html")
             history_ok = bool(history_files)
             summary_ok = bool(summary_files)
 
@@ -953,7 +971,7 @@ def wizard(non_interactive, p_name, p_desc, p_currency, p_budget, p_target_retur
             if summary_ok:
                 if _confirm(m["verify_confirm"], default=True):
                     console.print()
-                    verified = _run_verify()
+                    verified = _run_verify(dirs)
                     if not verified:
                         console.print(m["verify_diff_warn"])
                         if ni:
@@ -983,12 +1001,12 @@ def wizard(non_interactive, p_name, p_desc, p_currency, p_budget, p_target_retur
         console.print(Panel(f"[bold cyan]{m['step3_title']}[/bold cyan]", border_style="cyan"))
         seed_file = seed_files[0] if seed_files else ""
         ctx = click.get_current_context()
-        ctx.invoke(prepare, locale=locale, history_file="output/history.csv", seed_file=seed_file, rate_file=rate_file,
+        ctx.invoke(prepare, locale=locale, history_file=dirs.history_csv, seed_file=seed_file, rate_file=rate_file,
                    non_interactive=ni, p_name=p_name, p_desc=p_desc, p_currency=p_currency,
                    p_budget=p_budget, p_target_return=p_target_return,
                    p_start_date=p_start_date, p_target_date=p_target_date)
 
-        if not os.path.exists("output/upload.yaml") or not os.path.exists("output/order.csv"):
+        if not os.path.exists(dirs.upload_yaml) or not os.path.exists(dirs.order_csv):
             return
 
     if not _confirm(m["step4_confirm"], default=True):
@@ -1013,17 +1031,20 @@ def wizard(non_interactive, p_name, p_desc, p_currency, p_budget, p_target_retur
         return
 
     ctx = click.get_current_context()
-    ctx.invoke(upload, credentials=cred_path, config="output/upload.yaml", yes=True, lang=locale, memo_file="", output_json=output_json)
+    ctx.invoke(upload, credentials=cred_path, config=dirs.upload_yaml, yes=True, lang=locale, memo_file="", output_json=output_json)
     console.print(Panel(m["all_done"], border_style="green"))
 
 
 @cli.command()
-def analyze():
+@click.pass_obj
+def analyze(obj):
     """実現/未実現損益と総合ROIを分析する。"""
     from rich.table import Table
     from rich.panel import Panel
     from .parser import load_csv_rows, parse_summary_html, find_htmls, load_deposits
     from .analyzer import calc_realized, calc_unrealized, calc_roi
+
+    dirs = obj["dirs"]
 
     def _pnl(val) -> str:
         v = float(val)
@@ -1035,9 +1056,9 @@ def analyze():
         s = "green" if v >= 0 else "red"
         return f"[{s}]{v:+.1f}%[/{s}]"
 
-    rows = load_csv_rows()
+    rows = load_csv_rows(dirs)
     holdings = []
-    for sf in find_htmls("summary"):
+    for sf in find_htmls("summary", dirs):
         holdings.extend(parse_summary_html(sf))
 
     realized, total_realized = calc_realized(rows)
@@ -1072,7 +1093,7 @@ def analyze():
     console.print(table)
     console.print(f"  未実現損益合計: {_pnl(total_unrealized)} USD\n")
 
-    deposits = load_deposits()
+    deposits = load_deposits(dirs)
 
     roi = calc_roi(rows, holdings, deposits)
     summary = Table(title="総合サマリー", show_header=False, box=None, padding=(0, 2))

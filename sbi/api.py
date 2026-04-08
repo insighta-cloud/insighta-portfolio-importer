@@ -189,8 +189,9 @@ def fetch_ticker_info(tickers: list[str]) -> dict[str, dict]:
 class InsightaClient:
     """Insighta OpenAPI client."""
 
-    def __init__(self, credentials: Credentials):
+    def __init__(self, credentials: Credentials, output_dir: str = "output"):
         self.endpoint = credentials.endpoint
+        self.output_dir = output_dir
         self.headers = {
             "Authorization": f"Bearer {credentials.api_key}",
             "Content-Type": "application/json",
@@ -205,7 +206,7 @@ class InsightaClient:
             self._last_payload = payload
             payload_str = _json.dumps(payload, indent=2, ensure_ascii=False)
             log.debug("%s %s\n%s", method, url, payload_str)
-            log_path = os.path.join("output", "request_payload.log")
+            log_path = os.path.join(self.output_dir, "request_payload.log")
             with open(log_path, "a", encoding="utf-8") as lf:
                 lf.write(f"=== {method} {url} ===\n{payload_str}\n\n")
         else:

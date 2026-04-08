@@ -1,17 +1,15 @@
-input/**/*
-output/**/*
-!input/deposit/.gitkeep
-!input/history/.gitkeep
-!input/summary/.gitkeep
-!input/seed/.gitkeep
-!output/.gitkeep
+# Workspaces (input/output per portfolio)
+workspaces/*/input/**/*
+workspaces/*/output/**/*
+!workspaces/*/input/deposit/.gitkeep
+!workspaces/*/input/history/.gitkeep
+!workspaces/*/input/summary/.gitkeep
+!workspaces/*/input/seed/.gitkeep
+!workspaces/*/output/.gitkeep
 
 credentials.yaml
 !templates/credentials.yaml
-upload.yaml
 .insighta.yaml
-memo.csv
-!templates/memo.csv
 
 __pycache__/
 *.pyc

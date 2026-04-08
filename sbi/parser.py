@@ -7,13 +7,91 @@ from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
 
-INPUT_DIR = "input"
-OUTPUT_DIR = "output"
-HISTORY_DIR = f"{INPUT_DIR}/history"
-SUMMARY_DIR = f"{INPUT_DIR}/summary"
-SEED_DIR = f"{INPUT_DIR}/seed"
-DEPOSIT_DIR = f"{INPUT_DIR}/deposit"
-EXCHANGE_DIR = f"{INPUT_DIR}/currency_exchange"
+from dataclasses import dataclass as _dc
+import os as _os
+
+WORKSPACES_DIR = "workspaces"
+
+
+@_dc
+class Dirs:
+    """作業ディレクトリ設定。--work オプションで切り替え可能。"""
+    work: str = ""
+
+    @classmethod
+    def from_work(cls, work: str = "") -> "Dirs":
+        return cls(work=work)
+
+    @property
+    def _base(self) -> str:
+        return _os.path.join(WORKSPACES_DIR, self.work) if self.work else ""
+
+    @property
+    def input(self) -> str:
+        return _os.path.join(self._base, "input") if self._base else "input"
+
+    @property
+    def output(self) -> str:
+        return _os.path.join(self._base, "output") if self._base else "output"
+
+    @property
+    def history(self) -> str:
+        return _os.path.join(self.input, "history")
+
+    @property
+    def summary(self) -> str:
+        return _os.path.join(self.input, "summary")
+
+    @property
+    def seed(self) -> str:
+        return _os.path.join(self.input, "seed")
+
+    @property
+    def deposit(self) -> str:
+        return _os.path.join(self.input, "deposit")
+
+    @property
+    def exchange(self) -> str:
+        return _os.path.join(self.input, "currency_exchange")
+
+    @property
+    def rate_csv(self) -> str:
+        return _os.path.join(self.input, "rate.csv")
+
+    @property
+    def ratio_csv(self) -> str:
+        return _os.path.join(self.input, "ratio.csv")
+
+    @property
+    def history_csv(self) -> str:
+        return _os.path.join(self.output, "history.csv")
+
+    @property
+    def order_csv(self) -> str:
+        return _os.path.join(self.output, "order.csv")
+
+    @property
+    def upload_yaml(self) -> str:
+        return _os.path.join(self.output, "upload.yaml")
+
+    @property
+    def memo_csv(self) -> str:
+        return _os.path.join(self.output, "memo.csv")
+
+    @property
+    def cash_deposits_csv(self) -> str:
+        return _os.path.join(self.output, "cash_deposits.csv")
+
+    @property
+    def request_payload_log(self) -> str:
+        return _os.path.join(self.output, "request_payload.log")
+
+    def ensure_output(self):
+        """output ディレクトリを作成する。"""
+        _os.makedirs(self.output, exist_ok=True)
+
+
+DEFAULT_DIRS = Dirs()
 
 JST = timezone(timedelta(hours=9))
 
@@ -228,7 +306,7 @@ def _is_sbi_exchange(filepath: str) -> bool:
         return False
 
 
-def load_deposits() -> list[Deposit]:
+def load_deposits(dirs: Dirs = DEFAULT_DIRS) -> list[Deposit]:
     """input/deposit/*.csv を自動判別して読み込む.
 
     対応形式:
@@ -236,21 +314,21 @@ def load_deposits() -> list[Deposit]:
       - SBI配当金CSV (Shift_JIS)
     """
     deposits: list[Deposit] = []
-    for fname in sorted(glob.glob(f"{DEPOSIT_DIR}/*.csv")):
+    for fname in sorted(glob.glob(f"{dirs.deposit}/*.csv")):
         if _is_sbi_transfer(fname):
             deposits.extend(_parse_sbi_transfer(fname))
         elif _is_sbi_distribution(fname):
             deposits.extend(_parse_sbi_distribution(fname))
-    for fname in sorted(glob.glob(f"{EXCHANGE_DIR}/*.csv")):
+    for fname in sorted(glob.glob(f"{dirs.exchange}/*.csv")):
         if _is_sbi_exchange(fname):
             deposits.extend(_parse_sbi_exchange(fname))
     return deposits
 
 
-def load_csv_rows() -> list[dict]:
+def load_csv_rows(dirs: Dirs = DEFAULT_DIRS) -> list[dict]:
     """input/seed/*.csv + output/history.csv を読み込む"""
     rows = []
-    for pattern in [f"{SEED_DIR}/*.csv", f"{OUTPUT_DIR}/history.csv"]:
+    for pattern in [f"{dirs.seed}/*.csv", dirs.history_csv]:
         for fname in glob.glob(pattern):
             with open(fname, "r", encoding="utf-8") as f:
                 rows.extend(csv.DictReader(f))
@@ -360,10 +438,10 @@ def parse_summary_html(filename: str) -> list[Holding]:
     return holdings
 
 
-def find_htmls(prefix: str) -> list[str]:
+def find_htmls(prefix: str, dirs: Dirs = DEFAULT_DIRS) -> list[str]:
     """input/内の指定プレフィックスのHTMLファイルを検索"""
-    dir_map = {"history": HISTORY_DIR, "summary": SUMMARY_DIR}
-    d = dir_map.get(prefix, f"{INPUT_DIR}/{prefix}")
+    dir_map = {"history": dirs.history, "summary": dirs.summary}
+    d = dir_map.get(prefix, _os.path.join(dirs.input, prefix))
     files = sorted(glob.glob(f"{d}/*.html"))
     if not files:
         raise FileNotFoundError(f"{d}/ に *.html が見つかりません")
