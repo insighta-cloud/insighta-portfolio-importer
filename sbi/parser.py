@@ -210,6 +210,9 @@ def _parse_sbi_distribution(filepath: str) -> list[Deposit]:
     # 줄바꿈이 금액 안에 포함된 케이스 처리: 전체를 다시 csv로 파싱
     data_text = "\n".join(lines[header_idx:])
     for row in csv.DictReader(data_text.splitlines()):
+        product = row.get("商品", "").strip()
+        if "米国株式" in product:
+            continue
         dt_raw = row.get("受渡日", "").strip()
         name = row.get("銘柄名", "").strip()
         amt_str = row.get("受取額(税引後・円)", "").strip().replace("\n", "").replace(",", "")
@@ -306,6 +309,99 @@ def _is_sbi_exchange(filepath: str) -> bool:
         return False
 
 
+def _is_sbi_gaika_nyushukkin(filepath: str) -> bool:
+    """外貨入出金明細CSVかどうか判定."""
+    try:
+        with open(filepath, "r", encoding="utf-8-sig") as f:
+            head = f.read(512)
+        return "外貨入出金明細" in head
+    except Exception:
+        return False
+
+
+def _parse_sbi_gaika_nyushukkin(filepath: str) -> list[Deposit]:
+    """SBI証券 外貨入出金明細CSV をパース. 分配金/配当金 → USD dividend."""
+    deposits: list[Deposit] = []
+    with open(filepath, "r", encoding="utf-8-sig") as f:
+        content = f.read()
+    lines = content.splitlines()
+    # ヘッダー行を探す
+    header_idx = None
+    for i, line in enumerate(lines):
+        if "入出金日" in line and "区分" in line and "入金額" in line:
+            header_idx = i
+            break
+    if header_idx is None:
+        return deposits
+    data_text = "\n".join(lines[header_idx:])
+    for row in csv.DictReader(data_text.splitlines()):
+        kubun = row.get("区分", "").strip()
+        tekiyou = row.get("摘要", "").strip()
+        dt_raw = row.get("入出金日", "").strip()
+        if not dt_raw:
+            continue
+
+        if kubun in ("分配金", "配当金"):
+            amount_str = row.get("入金額", "0").strip().replace(",", "")
+            if not amount_str or amount_str == "0":
+                continue
+            try:
+                amount = Decimal(amount_str)
+            except Exception:
+                continue
+            ticker = ""
+            parts = tekiyou.split()
+            if parts:
+                ticker = parts[0]
+            deposits.append(Deposit(
+                dt=_to_jst_iso(dt_raw), amount=amount, cur="USD",
+                type="dividend", ticker=ticker,
+            ))
+        elif kubun == "-" and ("外貨出金" in tekiyou or "外貨入金" in tekiyou):
+            out_str = row.get("出金額", "0").strip().replace(",", "")
+            in_str = row.get("入金額", "0").strip().replace(",", "")
+            try:
+                out_amt = Decimal(out_str) if out_str and out_str != "0" else Decimal(0)
+                in_amt = Decimal(in_str) if in_str and in_str != "0" else Decimal(0)
+            except Exception:
+                continue
+            amount = in_amt - out_amt
+            if amount == 0:
+                continue
+            deposits.append(Deposit(
+                dt=_to_jst_iso(dt_raw), amount=amount, cur="USD",
+                type="budget", ticker="",
+            ))
+    return deposits
+
+
+def _is_plain_deposit(filepath: str) -> bool:
+    """先頭行が ``insighta-deposit`` のCSV."""
+    try:
+        with open(filepath, "r", encoding="utf-8-sig") as f:
+            return f.readline().strip() == "insighta-deposit"
+    except Exception:
+        return False
+
+
+def _parse_plain_deposit(filepath: str) -> list[Deposit]:
+    with open(filepath, "r", encoding="utf-8-sig") as f:
+        f.readline()  # skip name line
+        reader = csv.DictReader(f)
+        deposits: list[Deposit] = []
+        for row in reader:
+            amt = Decimal(row["amount"].replace(",", ""))
+            rate = Decimal(row["rate"].replace(",", "")) if row.get("rate", "").strip() else None
+            deposits.append(Deposit(
+                dt=_to_jst_iso(row["dt"]),
+                amount=amt, cur=row["cur"].strip(),
+                type=row["type"].strip(),
+                ticker=row.get("ticker", "").strip(),
+                rate=rate,
+            ))
+    return deposits
+
+
 def load_deposits(dirs: Dirs = DEFAULT_DIRS) -> list[Deposit]:
     """input/deposit/*.csv を自動判別して読み込む.
 
@@ -315,7 +411,11 @@ def load_deposits(dirs: Dirs = DEFAULT_DIRS) -> list[Deposit]:
     """
     deposits: list[Deposit] = []
     for fname in sorted(glob.glob(f"{dirs.deposit}/*.csv")):
-        if _is_sbi_transfer(fname):
+        if _is_plain_deposit(fname):
+            deposits.extend(_parse_plain_deposit(fname))
+        elif _is_sbi_gaika_nyushukkin(fname):
+            deposits.extend(_parse_sbi_gaika_nyushukkin(fname))
+        elif _is_sbi_transfer(fname):
             deposits.extend(_parse_sbi_transfer(fname))
         elif _is_sbi_distribution(fname):
             deposits.extend(_parse_sbi_distribution(fname))

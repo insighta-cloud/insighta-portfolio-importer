@@ -1,6 +1,7 @@
 # Workspaces (input/output per portfolio)
 workspaces/*/input/**/*
 workspaces/*/output/**/*
+workspaces/*/notes/
 !workspaces/*/input/deposit/.gitkeep
 !workspaces/*/input/history/.gitkeep
 !workspaces/*/input/summary/.gitkeep

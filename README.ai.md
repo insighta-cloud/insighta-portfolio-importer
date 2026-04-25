@@ -281,3 +281,4 @@ insighta --work sbi-us-stocks upload \
 | `401 Unauthorized` | API キーが無効 | `credentials.yaml` を確認 |
 | verify で差分あり | 履歴期間不足 or seed 不足 | HTML 追加 or `input/seed/` に CSV 追加 |
 | 残高不足区間が表示される | 為替入金データ不足 | https://member.c.sbisec.co.jp/banking/fc/activity-history から CSV をダウンロードして `input/currency_exchange/` に配置 |
+| USD 残高が合わない | 配当金が JPY で計上されている | https://member.c.sbisec.co.jp/banking/fc/detail-history から外貨入出金明細CSVをダウンロードして `input/deposit/` に配置（USD配当が正確に反映される） |

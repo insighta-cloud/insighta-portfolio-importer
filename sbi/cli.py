@@ -114,6 +114,21 @@ def _run_verify(dirs) -> bool:
     rows = load_csv_rows(dirs)
     holdings = aggregate_holdings(rows)
 
+    # CSV集計から移動平均法で取得単価を計算（売却時は平均単価維持、買付時に再計算）
+    _avg_price: dict[str, float] = {}
+    _hold_qty: dict[str, int] = {}
+    sorted_rows = sorted(rows, key=lambda r: r.get("dt", ""))
+    for r in sorted_rows:
+        t, q, p = r["ticker"], int(r["qty"]), float(r.get("price") or 0)
+        if q > 0 and p > 0:
+            prev_qty = _hold_qty.get(t, 0)
+            prev_avg = _avg_price.get(t, 0.0)
+            _avg_price[t] = (prev_avg * prev_qty + p * q) / (prev_qty + q)
+            _hold_qty[t] = prev_qty + q
+        elif q < 0:
+            _hold_qty[t] = _hold_qty.get(t, 0) + q  # reduce qty, keep avg
+    csv_avg: dict[str, float] = {t: round(v, 2) for t, v in _avg_price.items() if _hold_qty.get(t, 0) > 0}
+
     by_acct: dict[str, list[tuple[str, int]]] = {}
     for (ticker, acct), qty in holdings.items():
         by_acct.setdefault(acct, []).append((ticker, qty))
@@ -133,6 +148,7 @@ def _run_verify(dirs) -> bool:
         table.add_column("Ticker")
         table.add_column("数量", justify="right")
         table.add_column("取得単価", justify="right")
+        table.add_column("CSV平均", justify="right")
         table.add_column("現在値", justify="right")
         table.add_column("損益", justify="right")
         table.add_column("検証", justify="center")
@@ -144,8 +160,10 @@ def _run_verify(dirs) -> bool:
             pnl = p.get("pnl", "-")
             pnl_style = "red" if pnl != "-" and pnl < 0 else "green"
             pnl_str = f"[{pnl_style}]{pnl}[/{pnl_style}]" if pnl != "-" else "-"
+            ca = csv_avg.get(ticker)
+            ca_str = str(ca) if ca is not None else "-"
             table.add_row(ticker, str(qty), str(p.get("cost", "-")),
-                          str(p.get("price", "-")), pnl_str, check)
+                          ca_str, str(p.get("price", "-")), pnl_str, check)
         console.print(table)
 
     merged: dict[str, int] = {}
@@ -156,10 +174,13 @@ def _run_verify(dirs) -> bool:
     table.add_column("Ticker")
     table.add_column("数量", justify="right")
     table.add_column("取得単価", justify="right")
+    table.add_column("CSV平均", justify="right")
     table.add_column("現在値", justify="right")
     for ticker in sorted(merged):
         p = prices.get(ticker, {})
-        table.add_row(ticker, str(merged[ticker]), str(p.get("cost", "-")), str(p.get("price", "-")))
+        ca = csv_avg.get(ticker)
+        ca_str = str(ca) if ca is not None else "-"
+        table.add_row(ticker, str(merged[ticker]), str(p.get("cost", "-")), ca_str, str(p.get("price", "-")))
     console.print(table)
 
     diffs = []
@@ -229,7 +250,7 @@ def _run_verify(dirs) -> bool:
     shortfalls: list[tuple[str, str, str, Decimal]] = []  # (dt, label, currency, balance)
     for dt, label, amount, cur in events:
         balances[cur] = balances.get(cur, Decimal("0")) + amount
-        if balances[cur] < 0:
+        if balances[cur] < 0 and amount < 0:
             shortfalls.append((dt, label, cur, balances[cur]))
 
     if shortfalls:
@@ -287,8 +308,8 @@ def verify(obj):
 @click.option("--name", "p_name", default="", hidden=True)
 @click.option("--description", "p_desc", default="", hidden=True)
 @click.option("--currency", "p_currency", default="", hidden=True)
-@click.option("--budget", "p_budget", type=float, default=0, hidden=True)
-@click.option("--target-return", "p_target_return", type=float, default=0, hidden=True)
+@click.option("--budget", "p_budget", type=float, default=None, hidden=True)
+@click.option("--target-return", "p_target_return", type=float, default=None, hidden=True)
 @click.option("--start-date", "p_start_date", default="", hidden=True)
 @click.option("--target-date", "p_target_date", default="", hidden=True)
 @click.pass_obj
@@ -351,8 +372,8 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
     name = p_name or _prompt(m["prepare_name"], default="My Portfolio")
     description = p_desc or _prompt(m["prepare_desc"], default="Imported from brokerage trade history.")
     currency = p_currency or _prompt(m["prepare_currency"], type=click.Choice(["USD", "KRW", "JPY"]), default=m["default_currency"])
-    budget = p_budget or _prompt(m["prepare_budget"], type=float, default=10000.0)
-    target_return = p_target_return or _prompt(m["prepare_target_return"], type=float, default=0.1)
+    budget = p_budget if p_budget is not None else _prompt(m["prepare_budget"], type=float, default=10000.0)
+    target_return = p_target_return if p_target_return is not None else _prompt(m["prepare_target_return"], type=float, default=0.1)
     start_date = p_start_date or _prompt(m["prepare_start_date"], default=start_date_default)
     target_date = p_target_date or _prompt(m["prepare_target_date"], default=target_date_default)
 
@@ -476,27 +497,30 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
     deposits = load_deposits(dirs)
     cash_deposits_out = ""
     if deposits:
+        import re as _re
+
+        def _parse_deposit_dt(d):
+            try:
+                if _re.match(r"\d{4}-\d{2}-\d{2}T", d.dt):
+                    dt_obj = datetime.fromisoformat(d.dt)
+                    if dt_obj.tzinfo is None:
+                        dt_obj = dt_obj.replace(tzinfo=tz)
+                    return dt_obj
+                elif _re.match(r"\d{4}/\d+/\d+ \d+:\d+", d.dt):
+                    return datetime.strptime(d.dt, "%Y/%m/%d %H:%M").replace(tzinfo=tz)
+                else:
+                    return datetime.strptime(d.dt[:10], "%Y/%m/%d").replace(tzinfo=tz)
+            except (ValueError, AttributeError):
+                return datetime.max.replace(tzinfo=tz)
+
+        deposits.sort(key=_parse_deposit_dt)
         cash_deposits_out = dirs.cash_deposits_csv
         with open(cash_deposits_out, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["group_dt", "type", "amount", "currency", "ticker", "timestamp"])
             for d in deposits:
-                import re as _re
-                ts = ""
-                dt_obj = None
-                try:
-                    if _re.match(r"\d{4}-\d{2}-\d{2}T", d.dt):
-                        dt_obj = datetime.fromisoformat(d.dt)
-                        if dt_obj.tzinfo is None:
-                            dt_obj = dt_obj.replace(tzinfo=tz)
-                    elif _re.match(r"\d{4}/\d+/\d+ \d+:\d+", d.dt):
-                        dt_obj = datetime.strptime(d.dt, "%Y/%m/%d %H:%M").replace(tzinfo=tz)
-                    else:
-                        dt_obj = datetime.strptime(d.dt[:10], "%Y/%m/%d").replace(tzinfo=tz)
-                    ts = dt_obj.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                except (ValueError, AttributeError):
-                    pass
-                # group_dt = deposit 자체의 timestamp
+                dt_obj = _parse_deposit_dt(d)
+                ts = dt_obj.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if dt_obj.year < 9999 else ""
                 w.writerow([ts, d.type, float(d.amount), d.cur, d.ticker, ts])
 
     # --- Build portfolio items ---
@@ -823,8 +847,8 @@ def upload(obj, credentials, config, yes, lang, memo_file, output_json):
 @click.option("--name", "p_name", default="", help="ポートフォリオ名")
 @click.option("--description", "p_desc", default="", help="説明")
 @click.option("--currency", "p_currency", default="", help="通貨 (USD/JPY/KRW)")
-@click.option("--budget", "p_budget", type=float, default=0, help="初期予算")
-@click.option("--target-return", "p_target_return", type=float, default=0, help="目標リターン (%)")
+@click.option("--budget", "p_budget", type=float, default=None, help="初期予算")
+@click.option("--target-return", "p_target_return", type=float, default=None, help="目標リターン (%)")
 @click.option("--start-date", "p_start_date", default="", help="開始日 (YYYY-MM-DD)")
 @click.option("--target-date", "p_target_date", default="", help="目標日 (YYYY-MM-DD)")
 @click.option("--credentials", "cred_path_opt", default="", help="credentials.yaml パス")

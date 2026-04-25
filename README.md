@@ -24,6 +24,7 @@
 
 - 取引履歴のHTMLはユーザー自身がブラウザから手動で保存する必要があります
 - 為替取引履歴CSVは https://member.c.sbisec.co.jp/banking/fc/activity-history からダウンロードして `workspaces/<name>/input/currency_exchange/` に配置してください
+- 海外株式の配当金・分配金CSVは https://member.c.sbisec.co.jp/banking/fc/detail-history からダウンロードして `workspaces/<name>/input/deposit/` に配置してください（外貨建ての正確な配当額が反映されます）
 - 現在は海外株式口座のみ対応しています（国内株・投信等は未対応）
 - SBI証券のHTML構造が変更された場合、パースが正しく動作しない可能性があります
 - アップロード前に必ず `verify` コマンドでデータの正確性を確認してください
