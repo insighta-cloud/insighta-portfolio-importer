@@ -472,6 +472,21 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
         for row in order_rows:
             row["group_dt"] = row["timestamp"] or row["date_key"] + " 00:00:00"
 
+    # --- Split group when same ticker has different prices ---
+    from collections import defaultdict
+    _seen: dict[str, dict[str, str]] = defaultdict(dict)  # group_dt -> {ticker: price}
+    for row in order_rows:
+        gdt = row["group_dt"]
+        t, p = row["ticker"], row["price"]
+        if t in _seen[gdt] and _seen[gdt][t] != p:
+            # bump group_dt by 1 second to create a new group
+            dt_obj = datetime.strptime(gdt, "%Y-%m-%d %H:%M:%S") + timedelta(seconds=1)
+            new_gdt = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+            row["group_dt"] = new_gdt
+            _seen[new_gdt][t] = p
+        else:
+            _seen[gdt][t] = p
+
     # --- Merge same ticker+price within group ---
     merged_rows: dict[tuple, dict] = {}
     for row in order_rows:

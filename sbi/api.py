@@ -258,7 +258,7 @@ class InsightaClient:
         }
         if order_group.memo:
             body["memo"] = order_group.memo
-        if order_group.currency != portfolio_currency and order_group.exchange_rate:
+        if order_group.exchange_rate:
             body["custom_exchange_rate"] = order_group.exchange_rate
             body["is_custom_exchange_rate"] = True
         if order_group.cash_deposits:
