@@ -17,6 +17,7 @@ from sbi.parser import (
     _parse_sbi_transfer, _parse_sbi_gaika_nyushukkin,
     _parse_sbi_exchange,
     EXCHANGE_CURRENCY, JST, _to_jst_iso,
+    load_rate_file, lookup_rate,
 )
 
 # ---------------------------------------------------------------------------
@@ -130,8 +131,12 @@ def _find_header_row(filepath: str, marker: str, encoding: str = "shift_jis") ->
     return 0
 
 
-def _parse_yakujo_csv(filepath: str) -> ParseResult:
-    """海外株式約定履歴CSV → Trade リスト"""
+def _parse_yakujo_csv(filepath: str, rates=None) -> ParseResult:
+    """海外株式約定履歴CSV → Trade + fee Deposit リスト
+
+    USD決済: fee = 受渡金額 - 約定単価×数量 (買付) or 約定単価×数量 - 受渡金額 (売却)
+    JPY決済: rate があれば fee = 受渡金額 - 約定単価×数量×rate
+    """
     result = ParseResult()
     skip = _find_header_row(filepath, "国内約定日,通貨,銘柄名")
     df = pd.read_csv(filepath, encoding="shift_jis", skiprows=skip)
@@ -144,17 +149,35 @@ def _parse_yakujo_csv(filepath: str) -> ParseResult:
         acct = "TT" if row["預り区分"] == "特定" else row["預り区分"]
         price = Decimal(str(row["約定単価"]))
         cur = "USD" if row["通貨"] == "米国ドル" else "JPY"
+        settle = Decimal(str(row["受渡金額"]))
+        dt_iso = _to_jst_iso(dt_raw)
 
         result.trades.append(Trade(
-            dt=_to_jst_iso(dt_raw),
-            ticker=ticker,
+            dt=dt_iso, ticker=ticker,
             qty=qty if is_buy else -qty,
-            acct=acct,
-            price=price,
-            avg=price,
-            cur=cur,
-            base=base,
+            acct=acct, price=price, avg=price, cur=cur, base=base,
         ))
+
+        # 手数料自動計算
+        calc = price * qty
+        if cur == "USD":
+            fee = (settle - calc) if is_buy else (calc - settle)
+        elif rates:
+            rate = lookup_rate(rates, dt_iso, cur, base)
+            if rate:
+                fee = (settle - calc * rate) if is_buy else (calc * rate - settle)
+            else:
+                result.warnings.append(f"rate未設定: {dt_iso[:10]} {ticker} {cur}")
+                continue
+        else:
+            continue
+
+        if fee > 0:
+            result.deposits.append(Deposit(
+                dt=dt_iso, amount=-fee, cur=cur,
+                type="budget", ticker=f"fee:{ticker}",
+            ))
+
     return result
 
 
@@ -205,7 +228,6 @@ def _parse_domestic_fund(filepath: str) -> ParseResult:
 _HANDLERS: dict[str, callable] = {
     "summary": lambda fp: _wrap_holdings(fp),
     "history_html": lambda fp: _wrap_history_html(fp),
-    "history_csv": _parse_yakujo_csv,
     "domestic_fund": lambda fp: _parse_domestic_fund(fp),
     "deposit_transfer": lambda fp: ParseResult(deposits=_parse_sbi_transfer(fp)),
     "deposit_gaika": lambda fp: ParseResult(deposits=_parse_sbi_gaika_nyushukkin(fp)),
@@ -263,11 +285,13 @@ def _dedup_deposits(deposits: list[Deposit]) -> tuple[list[Deposit], list[str]]:
 # Main entry
 # ---------------------------------------------------------------------------
 
-def process_sbi_dir(sbi_dir: str, cache_dir: str | None = None) -> ParseResult:
+def process_sbi_dir(sbi_dir: str, cache_dir: str | None = None, rate_file: str = "") -> ParseResult:
     """input/sbi/ ディレクトリ内の全ファイルを自動分類・パース。
 
     cache_dir が指定された場合、パース済みCSVを UTF-8 で保存する。
+    rate_file が指定された場合、JPY決済取引の手数料計算に使用する。
     """
+    rates = load_rate_file(rate_file) if rate_file else []
     result = ParseResult()
     files = sorted(glob.glob(os.path.join(sbi_dir, "*")))
 
@@ -275,10 +299,11 @@ def process_sbi_dir(sbi_dir: str, cache_dir: str | None = None) -> ParseResult:
         if os.path.isdir(fp):
             continue
         file_type = classify(fp)
-        handler = _HANDLERS.get(file_type) if file_type else None
 
-        if handler:
-            result.merge(handler(fp))
+        if file_type == "history_csv":
+            result.merge(_parse_yakujo_csv(fp, rates=rates))
+        elif file_type and file_type in _HANDLERS:
+            result.merge(_HANDLERS[file_type](fp))
         elif file_type is None:
             result.warnings.append(f"分類不能: {os.path.basename(fp)}")
         else:

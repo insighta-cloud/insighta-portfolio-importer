@@ -1,12 +1,5 @@
 # Workspaces (input/output per portfolio)
-workspaces/*/input/**/*
-workspaces/*/output/**/*
-workspaces/*/notes/
-!workspaces/*/input/deposit/.gitkeep
-!workspaces/*/input/history/.gitkeep
-!workspaces/*/input/summary/.gitkeep
-!workspaces/*/input/seed/.gitkeep
-!workspaces/*/output/.gitkeep
+workspaces/*
 
 credentials.yaml
 !templates/credentials.yaml

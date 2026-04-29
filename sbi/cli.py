@@ -48,35 +48,26 @@ def parse(obj, rate, rate_file):
     import csv
     from rich.table import Table
     from rich.panel import Panel
-    from .parser import find_htmls, parse_history_html, load_rate_file, lookup_rate
+    from .parser import load_rate_file, lookup_rate
 
     dirs = obj["dirs"]
     dirs.ensure_output()
 
-    if not rate_file and _os.path.exists(dirs.rate_csv):
-        rate_file = dirs.rate_csv
+    if not rate_file:
+        for candidate in [dirs.rate_csv, _os.path.join(dirs.manual, "rate.csv")]:
+            if _os.path.exists(candidate):
+                rate_file = candidate
+                break
 
-    htmls = find_htmls("history", dirs)
+    from .parser_v2 import process_sbi_dir
+    result = process_sbi_dir(dirs.sbi, rate_file=rate_file,
+                             cache_dir=_os.path.join(dirs._base or ".", ".cache"))
+
     rates = load_rate_file(rate_file) if rate_file else []
 
-    all_trades, all_skipped = [], {}
-    for h in htmls:
-        trades, skipped = parse_history_html(h)
-        all_trades.extend(trades)
-        all_skipped[h] = skipped
-
-    seen, deduped, dup_count = set(), [], 0
-    for t in all_trades:
-        key = (t.dt, t.ticker, t.qty)
-        if key in seen:
-            dup_count += 1
-        else:
-            seen.add(key)
-            deduped.append(t)
-
-    deduped.sort(key=lambda t: t.dt, reverse=True)
-
+    # history.csv 出力
     out = dirs.history_csv
+    deduped = sorted(result.trades, key=lambda t: t.dt, reverse=True)
     with open(out, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["dt", "ticker", "qty", "acct", "price", "avg", "cur", "base", "rate"])
@@ -84,21 +75,31 @@ def parse(obj, rate, rate_file):
             r = lookup_rate(rates, t.dt, t.cur, t.base) if rates else (rate if t.cur != t.base else "")
             w.writerow([t.dt, t.ticker, t.qty, t.acct, t.price, t.avg, t.cur, t.base, r or ""])
 
+    # deposits を deposit ディレクトリに保存
+    _os.makedirs(dirs.deposit, exist_ok=True)
+    dep_out = _os.path.join(dirs.deposit, "_auto_deposits.csv")
+    if result.deposits:
+        with open(dep_out, "w", newline="", encoding="utf-8") as f:
+            f.write("insighta-deposit\n")
+            w = csv.writer(f)
+            w.writerow(["dt", "type", "amount", "cur", "ticker", "rate"])
+            for d in result.deposits:
+                w.writerow([d.dt, d.type, d.amount, d.cur, d.ticker, d.rate or ""])
+
     table = Table(title="パース結果")
     table.add_column("項目")
     table.add_column("件数", justify="right")
-    table.add_row("パース合計", str(len(deduped)))
-    if dup_count:
-        table.add_row("[yellow]重複除去[/yellow]", str(dup_count))
+    table.add_row("取引", str(len(result.trades)))
+    table.add_row("保有銘柄", str(len(result.holdings)))
+    table.add_row("入出金", str(len(result.deposits)))
+    if result.skipped:
+        table.add_row("[yellow]重複除去[/yellow]", str(len(result.skipped)))
     console.print(table)
 
-    for h, skipped in all_skipped.items():
-        if skipped:
-            st = Table(title=f"スキップ ({h})", show_lines=False)
-            st.add_column("理由", style="yellow")
-            for s in skipped:
-                st.add_row(s)
-            console.print(st)
+    for s in result.skipped:
+        console.print(f"  [yellow]{s}[/yellow]")
+    for w in result.warnings:
+        console.print(f"  [yellow]⚠ {w}[/yellow]")
 
     rate_info = f"rate-file={rate_file}" if rate_file else f"rate={rate or '未指定'}"
     console.print(Panel(f"[bold green]{out}[/bold green] 生成完了  {rate_info}"))
@@ -109,10 +110,18 @@ def _run_verify(dirs) -> bool:
     from decimal import Decimal
     from rich.table import Table
     from rich.panel import Panel
-    from .parser import load_csv_rows, aggregate_holdings, parse_summary_html, find_htmls, load_deposits
+    from .parser import load_csv_rows, aggregate_holdings
+    from .parser_v2 import process_sbi_dir
 
     rows = load_csv_rows(dirs)
     holdings = aggregate_holdings(rows)
+
+    rate_file = ""
+    for candidate in [dirs.rate_csv, _os.path.join(dirs.manual, "rate.csv")]:
+        if _os.path.exists(candidate):
+            rate_file = candidate
+            break
+    _v2_result = process_sbi_dir(dirs.sbi, rate_file=rate_file)
 
     # CSV集計から移動平均法で取得単価を計算（売却時は平均単価維持、買付時に再計算）
     _avg_price: dict[str, float] = {}
@@ -137,10 +146,9 @@ def _run_verify(dirs) -> bool:
 
     actual: dict[tuple[str, str], int] = {}
     prices: dict[str, dict] = {}
-    for sf in find_htmls("summary", dirs):
-        for h in parse_summary_html(sf):
-            actual[(h.ticker, h.acct)] = h.qty
-            prices[h.ticker] = {"cost": h.cost, "price": h.price, "pnl": h.pnl}
+    for h in _v2_result.holdings:
+        actual[(h.ticker, h.acct)] = h.qty
+        prices[h.ticker] = {"cost": h.cost, "price": h.price, "pnl": h.pnl}
 
     for acct in sorted(by_acct):
         icon = "🟢" if acct == "NISA" else "🔵"
@@ -207,7 +215,8 @@ def _run_verify(dirs) -> bool:
     # --- 残高検証: 入金/売買を時系列で追い、通貨別残高がマイナスになる区間を検出 ---
     events: list[tuple[str, str, Decimal, str]] = []  # (dt, label, amount, currency)
     rate_missing: list[tuple[str, str, int, str, str]] = []  # (dt, ticker, qty, cur, base)
-    for d in load_deposits(dirs):
+    _deposits = _v2_result.deposits
+    for d in _deposits:
         events.append((d.dt, f"{d.type} {d.ticker}".strip(), d.amount, d.cur))
     for r in rows:
         dt, ticker = r["dt"], r["ticker"]
@@ -321,7 +330,8 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
     from datetime import datetime
     from rich.table import Table
     from rich.panel import Panel
-    from .parser import load_rate_file, lookup_rate, load_deposits
+    from .parser import load_rate_file, lookup_rate
+    from .parser_v2 import process_sbi_dir
     from .i18n import load_locale, msg
     from datetime import timezone, timedelta
     dirs = obj["dirs"]
@@ -344,6 +354,14 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
 
     today = datetime.now().strftime("%Y-%m-%d")
 
+    # v2 deposits
+    _rate_file = ""
+    for candidate in [dirs.rate_csv, _os.path.join(dirs.manual, "rate.csv")]:
+        if _os.path.exists(candidate):
+            _rate_file = candidate
+            break
+    _v2_deposits = process_sbi_dir(dirs.sbi, rate_file=_rate_file).deposits
+
     # Determine earliest date from orders + deposits
     def _earliest_date() -> str:
         import csv as _csv, re as _re
@@ -357,7 +375,8 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
                             dates.append(dt)
             except FileNotFoundError:
                 pass
-        for d in load_deposits(dirs):
+        for d in _v2_deposits:
+            dt = d.dt[:10]
             if _re.match(r"\d{4}-\d{2}-\d{2}", dt):
                 dates.append(dt)
         return min(dates) if dates else today
@@ -380,9 +399,14 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
     if not history_file:
         history_file = _prompt(m["prepare_history"], default=dirs.history_csv)
     if not seed_file:
-        seed_file = _prompt(m["prepare_seed"], default=f"{dirs.seed}/seed.csv")
+        for candidate in [f"{dirs.seed}/seed.csv", _os.path.join(dirs.manual, "seed.csv")]:
+            if _os.path.exists(candidate):
+                seed_file = candidate
+                break
+        if not seed_file:
+            seed_file = _prompt(m["prepare_seed"], default=f"{dirs.seed}/seed.csv")
     if not rate_file:
-        rate_file = _prompt(m["prepare_rate"], default=dirs.rate_csv)
+        rate_file = _rate_file or _prompt(m["prepare_rate"], default=dirs.rate_csv)
 
     do_group = _confirm(m["prepare_group"], default=True)
     if do_group:
@@ -509,7 +533,7 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
             ])
 
     # --- Write cash_deposits.csv ---
-    deposits = load_deposits(dirs)
+    deposits = _v2_deposits
     cash_deposits_out = ""
     if deposits:
         import re as _re
@@ -951,7 +975,6 @@ def wizard(obj, non_interactive, p_name, p_desc, p_currency, p_budget, p_target_
     if rate_exists:
         rate_file = dirs.rate_csv
 
-    # ループで Step 1 ↔ Step 2 を行き来できるようにする
     if not skip_parse:
         while True:
             # === Step 1 ===
@@ -965,22 +988,17 @@ def wizard(obj, non_interactive, p_name, p_desc, p_currency, p_budget, p_target_
             # === Step 2 ===
             console.print(Panel(f"[bold cyan]{m['step2_title']}[/bold cyan]", border_style="cyan"))
 
-            history_files = glob.glob(f"{dirs.history}/*.html")
-            summary_files = glob.glob(f"{dirs.summary}/*.html")
-            history_ok = bool(history_files)
-            summary_ok = bool(summary_files)
+            sbi_files = glob.glob(os.path.join(dirs.sbi, "*"))
+            sbi_ok = bool(sbi_files)
+            summary_ok = any(f.endswith(".html") for f in sbi_files)
 
             if not ni:
                 status = Table(show_header=False, box=None, padding=(0, 1), title=m["file_detection"])
                 status.add_column()
                 status.add_column()
                 status.add_row(
-                    "[green]✅[/green]" if history_ok else "[red]❌[/red]",
-                    m["history_found"].format(n=len(history_files)) if history_ok else m["history_missing"],
-                )
-                status.add_row(
-                    "[green]✅[/green]" if summary_ok else "[yellow]⚠[/yellow]",
-                    m["summary_found"].format(n=len(summary_files)) if summary_ok else m["summary_missing"],
+                    "[green]✅[/green]" if sbi_ok else "[red]❌[/red]",
+                    f"input/sbi/ ファイル: {len(sbi_files)} 件" if sbi_ok else "input/sbi/ にファイルがありません",
                 )
                 if seed_files:
                     status.add_row("[green]✅[/green]", m["seed_found"].format(n=len(seed_files)))
@@ -988,11 +1006,11 @@ def wizard(obj, non_interactive, p_name, p_desc, p_currency, p_budget, p_target_
                     status.add_row("[green]✅[/green]", m["rate_found"])
                 console.print(status)
 
-            if not history_ok:
+            if not sbi_ok:
                 if ni:
-                    console.print("[red]No history HTML found. Aborting.[/red]")
+                    console.print("[red]No files found in input/sbi/. Aborting.[/red]")
                     raise SystemExit(1)
-                console.print(f"\n{m['history_required']}")
+                console.print(f"\ninput/sbi/ にファイルを配置してください。")
                 console.print(m["back_to_step1"])
                 continue
 
@@ -1000,13 +1018,10 @@ def wizard(obj, non_interactive, p_name, p_desc, p_currency, p_budget, p_target_
             rate = ""
             if rate_exists:
                 console.print(m["rate_file_auto"])
-            else:
-                rate = _prompt(m["rate_prompt"], default="")
 
             ctx = click.get_current_context()
             ctx.invoke(parse, rate=rate, rate_file=rate_file)
 
-            # --- 검증 (옵션) ---
             if summary_ok:
                 if _confirm(m["verify_confirm"], default=True):
                     console.print()
@@ -1080,7 +1095,8 @@ def analyze(obj):
     """実現/未実現損益と総合ROIを分析する。"""
     from rich.table import Table
     from rich.panel import Panel
-    from .parser import load_csv_rows, parse_summary_html, find_htmls, load_deposits
+    from .parser import load_csv_rows
+    from .parser_v2 import process_sbi_dir
     from .analyzer import calc_realized, calc_unrealized, calc_roi
 
     dirs = obj["dirs"]
@@ -1095,10 +1111,15 @@ def analyze(obj):
         s = "green" if v >= 0 else "red"
         return f"[{s}]{v:+.1f}%[/{s}]"
 
+    rate_file = ""
+    for candidate in [dirs.rate_csv, _os.path.join(dirs.manual, "rate.csv")]:
+        if _os.path.exists(candidate):
+            rate_file = candidate
+            break
+    v2r = process_sbi_dir(dirs.sbi, rate_file=rate_file)
+
     rows = load_csv_rows(dirs)
-    holdings = []
-    for sf in find_htmls("summary", dirs):
-        holdings.extend(parse_summary_html(sf))
+    holdings = list(v2r.holdings)
 
     realized, total_realized = calc_realized(rows)
     table = Table(title="売却済み (実現損益)")
@@ -1132,7 +1153,7 @@ def analyze(obj):
     console.print(table)
     console.print(f"  未実現損益合計: {_pnl(total_unrealized)} USD\n")
 
-    deposits = load_deposits(dirs)
+    deposits = v2r.deposits
 
     roi = calc_roi(rows, holdings, deposits)
     summary = Table(title="総合サマリー", show_header=False, box=None, padding=(0, 2))

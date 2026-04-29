@@ -55,6 +55,14 @@ class Dirs:
         return _os.path.join(self.input, "currency_exchange")
 
     @property
+    def sbi(self) -> str:
+        return _os.path.join(self.input, "sbi")
+
+    @property
+    def manual(self) -> str:
+        return _os.path.join(self.input, "manual")
+
+    @property
     def rate_csv(self) -> str:
         return _os.path.join(self.input, "rate.csv")
 
@@ -426,9 +434,9 @@ def load_deposits(dirs: Dirs = DEFAULT_DIRS) -> list[Deposit]:
 
 
 def load_csv_rows(dirs: Dirs = DEFAULT_DIRS) -> list[dict]:
-    """input/seed/*.csv + output/history.csv を読み込む"""
+    """input/seed/*.csv + input/manual/seed.csv + output/history.csv を読み込む"""
     rows = []
-    for pattern in [f"{dirs.seed}/*.csv", dirs.history_csv]:
+    for pattern in [f"{dirs.seed}/*.csv", f"{dirs.manual}/seed.csv", dirs.history_csv]:
         for fname in glob.glob(pattern):
             with open(fname, "r", encoding="utf-8") as f:
                 rows.extend(csv.DictReader(f))
