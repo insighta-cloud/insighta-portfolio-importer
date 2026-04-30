@@ -232,24 +232,36 @@ MESSAGES = {
 }
 
 
-def load_locale() -> str | None:
-    """保存済みlocaleを読み込む。未設定ならNone。"""
+def _load_config() -> dict:
     if not os.path.exists(CONFIG_PATH):
-        return None
+        return {}
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    return data.get("locale")
+        return yaml.safe_load(f) or {}
+
+
+def _save_config(data: dict):
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, allow_unicode=True)
+
+
+def load_locale() -> str | None:
+    return _load_config().get("locale")
 
 
 def save_locale(locale: str):
-    """localeを保存する。"""
-    data = {}
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+    data = _load_config()
     data["locale"] = locale
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        yaml.dump(data, f, allow_unicode=True)
+    _save_config(data)
+
+
+def load_credentials_path() -> str | None:
+    return _load_config().get("credentials")
+
+
+def save_credentials_path(path: str):
+    data = _load_config()
+    data["credentials"] = path
+    _save_config(data)
 
 
 def msg(locale: str) -> dict:

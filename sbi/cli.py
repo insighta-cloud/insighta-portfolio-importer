@@ -726,7 +726,7 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
 
 
 @cli.command()
-@click.option("--credentials", required=True, help="Path to credentials.yaml")
+@click.option("--credentials", default="", help="Path to credentials.yaml")
 @click.option("--config", required=True, help="Path to upload.yaml (default: output/upload.yaml)")
 @click.option("--yes", "-y", is_flag=True, help="確認プロンプトをスキップ")
 @click.option("--lang", default="ja", hidden=True)
@@ -743,7 +743,7 @@ def upload(obj, credentials, config, yes, lang, memo_file, output_json):
     dirs = obj["dirs"]
     dirs.ensure_output()
 
-    creds = Credentials.from_file(credentials)
+    creds = Credentials.from_file(_resolve_credentials(credentials))
     upload_cfg = UploadConfig.from_file(config)
     client = InsightaClient(creds, output_dir=dirs.output)
 
@@ -1069,7 +1069,10 @@ def wizard(obj, non_interactive, p_name, p_desc, p_currency, p_budget, p_target_
     # === Step 4 ===
     console.print(Panel(f"[bold cyan]{m['step4_title']}[/bold cyan]", border_style="cyan"))
 
-    cred_path = cred_path_opt or "credentials.yaml"
+    cred_path = cred_path_opt
+    if not cred_path:
+        from .i18n import load_credentials_path
+        cred_path = load_credentials_path() or "credentials.yaml"
     if not os.path.exists(cred_path):
         console.print(m["cred_missing"].format(path=cred_path))
         if output_json:
@@ -1168,3 +1171,152 @@ def analyze(obj):
     summary.add_row("Total P&L", f"{_pnl(roi['total_pnl'])} USD")
     summary.add_row("ROI", _pct(roi['roi']))
     console.print(Panel(summary))
+
+
+# ── config & API query commands ─────────────────────────────────
+
+
+def _resolve_credentials(credentials: str) -> str:
+    """Resolve credentials path: CLI option > config > error."""
+    if credentials:
+        return credentials
+    from .i18n import load_credentials_path
+    saved = load_credentials_path()
+    if saved:
+        return saved
+    raise click.UsageError(
+        "credentials が未指定です。--credentials で指定するか、"
+        "`insighta config --credentials <path>` で保存してください。"
+    )
+
+
+def _make_client(credentials: str):
+    from .api import Credentials, InsightaClient
+    return InsightaClient(Credentials.from_file(_resolve_credentials(credentials)))
+
+
+@cli.command()
+@click.option("--credentials", default="", help="credentials.yaml パスを保存")
+def config(credentials):
+    """デフォルト設定を保存・表示する。"""
+    from .i18n import load_credentials_path, save_credentials_path
+    if credentials:
+        save_credentials_path(credentials)
+        console.print(f"[green]✅ credentials = {credentials}[/green]")
+    else:
+        saved = load_credentials_path()
+        if saved:
+            console.print(f"credentials: {saved}")
+        else:
+            console.print("[dim]未設定。--credentials <path> で保存できます。[/dim]")
+
+
+@cli.command("list-portfolios")
+@click.option("--credentials", default="", help="Path to credentials.yaml")
+@click.option("--output-json", is_flag=True, help="結果をJSONで出力")
+def list_portfolios(credentials, output_json):
+    """自分のポートフォリオ一覧を取得する。"""
+    import json as _json
+    client = _make_client(credentials)
+    data = client.get_portfolios()
+    if output_json:
+        click.echo(_json.dumps(data, ensure_ascii=False, indent=2))
+        return
+    from rich.table import Table
+    items = data if isinstance(data, list) else data.get("portfolios", data.get("items", []))
+    table = Table(title="ポートフォリオ一覧")
+    table.add_column("ID")
+    table.add_column("名前")
+    table.add_column("通貨")
+    table.add_column("タイプ")
+    for p in items:
+        table.add_row(p.get("portfolio_id", p.get("id", "")), p.get("name", ""), p.get("currency", ""), p.get("type", ""))
+    console.print(table)
+
+
+@cli.command("search-portfolios")
+@click.option("--credentials", default="", help="Path to credentials.yaml")
+@click.option("--search", default=None, help="検索キーワード")
+@click.option("--country", default=None, help="国コード (例: JP, KR, US)")
+@click.option("--sort-by", default=None, help="ソート基準")
+@click.option("--last-item", default=None, help="ページネーション用 last_item")
+@click.option("--output-json", is_flag=True, help="結果をJSONで出力")
+def search_portfolios_cmd(credentials, search, country, sort_by, last_item, output_json):
+    """公開ポートフォリオを検索する。"""
+    import json as _json
+    client = _make_client(credentials)
+    data = client.search_portfolios(search=search, country=country, sort_by=sort_by, last_item=last_item)
+    if output_json:
+        click.echo(_json.dumps(data, ensure_ascii=False, indent=2))
+        return
+    from rich.table import Table
+    items = data if isinstance(data, list) else data.get("portfolios", data.get("items", []))
+    table = Table(title="検索結果")
+    table.add_column("ID")
+    table.add_column("名前")
+    table.add_column("通貨")
+    table.add_column("タイプ")
+    for p in items:
+        table.add_row(p.get("portfolio_id", p.get("id", "")), p.get("name", ""), p.get("currency", ""), p.get("type", ""))
+    console.print(table)
+
+
+@cli.command("delete-portfolio")
+@click.option("--credentials", default="", help="Path to credentials.yaml")
+@click.argument("portfolio_id")
+@click.option("--yes", "-y", is_flag=True, help="確認プロンプトをスキップ")
+def delete_portfolio_cmd(credentials, portfolio_id, yes):
+    """ポートフォリオを削除する。"""
+    if not yes and not click.confirm(f"ポートフォリオ {portfolio_id} を削除しますか？"):
+        console.print("[yellow]中断しました。[/yellow]")
+        return
+    client = _make_client(credentials)
+    client.delete_portfolio(portfolio_id)
+    console.print(f"[green]✅ {portfolio_id} を削除しました。[/green]")
+
+
+@cli.command("nav-history")
+@click.option("--credentials", default="", help="Path to credentials.yaml")
+@click.argument("portfolio_id")
+@click.option("--output-json", is_flag=True, help="結果をJSONで出力")
+def nav_history_cmd(credentials, portfolio_id, output_json):
+    """ポートフォリオのNAV履歴を取得する。"""
+    import json as _json
+    client = _make_client(credentials)
+    data = client.get_nav_history(portfolio_id)
+    if output_json:
+        click.echo(_json.dumps(data, ensure_ascii=False, indent=2))
+        return
+    from rich.table import Table
+    items = data if isinstance(data, list) else data.get("history", data.get("items", []))
+    table = Table(title=f"NAV History: {portfolio_id}")
+    table.add_column("日付")
+    table.add_column("NAV", justify="right")
+    for h in items:
+        table.add_row(str(h.get("date", h.get("timestamp", ""))), str(h.get("nav", h.get("value", ""))))
+    console.print(table)
+
+
+@cli.command("metrics-history")
+@click.option("--credentials", default="", help="Path to credentials.yaml")
+@click.argument("portfolio_id")
+@click.option("--metrics", default="twr", help="メトリクス種別 (例: twr)")
+@click.option("--from-t", "from_t", type=int, default=None, help="開始タイムスタンプ (ms)")
+@click.option("--to-t", "to_t", type=int, default=None, help="終了タイムスタンプ (ms)")
+@click.option("--output-json", is_flag=True, help="結果をJSONで出力")
+def metrics_history_cmd(credentials, portfolio_id, metrics, from_t, to_t, output_json):
+    """ポートフォリオのメトリクス履歴を取得する。"""
+    import json as _json
+    client = _make_client(credentials)
+    data = client.get_metrics_history(portfolio_id, metrics=metrics, from_t=from_t, to_t=to_t)
+    if output_json:
+        click.echo(_json.dumps(data, ensure_ascii=False, indent=2))
+        return
+    from rich.table import Table
+    items = data if isinstance(data, list) else data.get("history", data.get("items", []))
+    table = Table(title=f"Metrics History ({metrics}): {portfolio_id}")
+    table.add_column("日付")
+    table.add_column("値", justify="right")
+    for h in items:
+        table.add_row(str(h.get("date", h.get("timestamp", ""))), str(h.get("value", "")))
+    console.print(table)
