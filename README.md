@@ -123,7 +123,7 @@ description: |
   - 配当: SPYD
 currency: JPY
 budget: 500000
-target_return: 0.1
+target_return: 10
 start_date: "2025-01-01"
 target_date: "2035-01-01"
 ratio:

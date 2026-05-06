@@ -410,7 +410,7 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
     description = p_desc or _prompt(m["prepare_desc"], default="Imported from brokerage trade history.")
     currency = p_currency or _prompt(m["prepare_currency"], type=click.Choice(["USD", "KRW", "JPY"]), default=m["default_currency"])
     budget = p_budget if p_budget is not None else _prompt(m["prepare_budget"], type=float, default=10000.0)
-    target_return = p_target_return if p_target_return is not None else _prompt(m["prepare_target_return"], type=float, default=0.1)
+    target_return = p_target_return if p_target_return is not None else _prompt(m["prepare_target_return"], type=float, default=10)
     start_date = p_start_date or _prompt(m["prepare_start_date"], default=start_date_default)
     target_date = p_target_date or _prompt(m["prepare_target_date"], default=target_date_default)
 
