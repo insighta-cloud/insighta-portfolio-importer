@@ -1,18 +1,20 @@
-# insighta Portfolio Importer
+# insighta CLI
 
 > 🤖 AI エージェントで操作する場合は [README.ai.md](README.ai.md) を参照してください。
 
 [Insighta Cloud](https://insighta.cloud) へのポートフォリオ一括登録を支援するCLIツールです。
-証券会社の取引履歴から注文データを抽出し、検証・分析したうえで Insighta API へまとめてアップロードできます。
+証券会社の取引データから注文を抽出し、検証・分析したうえで Insighta API へまとめてアップロードできます。
 
 ![upload preview](docs/images/upload-preview.png)
 
-- **パース**: 証券会社のHTMLから注文履歴を抽出 → CSV変換
+- **パース**: `input/sbi/` にファイルを置くだけで自動分類・CSV変換
 - **検証**: CSV集計と実際の保有状況の照合
 - **分析**: 実現/未実現損益・総合ROI
 - **アップロード**: Insighta API へポートフォリオデータを一括送信
+- **API管理**: ポートフォリオ一覧・検索・削除・NAV/メトリクス履歴取得
 
 > ⚠️ 現在はSBI証券の海外株式口座のみ対応しています。
+> 🇰🇷 한국어 (미래에셋증권) 지원은 현재 준비중입니다.
 
 ## このツールはこんな方向けです
 
@@ -22,24 +24,22 @@
 
 ## 注意事項
 
-- 取引履歴のHTMLはユーザー自身がブラウザから手動で保存する必要があります
-- 為替取引履歴CSVは https://member.c.sbisec.co.jp/banking/fc/activity-history からダウンロードして `workspaces/<name>/input/currency_exchange/` に配置してください
-- 海外株式の配当金・分配金CSVは https://member.c.sbisec.co.jp/banking/fc/detail-history からダウンロードして `workspaces/<name>/input/deposit/` に配置してください（外貨建ての正確な配当額が反映されます）
-- 現在は海外株式口座のみ対応しています（国内株・投信等は未対応）
+- 取引データはユーザー自身がSBI証券のWebサイトから手動でダウンロード・保存する必要があります
+- 現在は海外株式口座のみ対応しています（国内株・投信は入出金として処理）
 - SBI証券のHTML構造が変更された場合、パースが正しく動作しない可能性があります
 - アップロード前に必ず `verify` コマンドでデータの正確性を確認してください
 
 ## 1. Setup
 
 ```bash
-pip install git+https://github.com/insighta-cloud/insighta-portfolio-importer.git
+pip install git+https://github.com/insighta-cloud/insighta-cli.git
 ```
 
 または:
 
 ```bash
-git clone https://github.com/insighta-cloud/insighta-portfolio-importer.git
-cd insighta-portfolio-importer
+git clone https://github.com/insighta-cloud/insighta-cli.git
+cd insighta-cli
 pip install .
 ```
 
@@ -54,9 +54,58 @@ cp templates/credentials.yaml credentials.yaml
 `credentials.yaml` を開いて API キーを設定します。
 API キーは https://insighta.cloud/settings から取得できます。
 
+設定後、パスを保存しておくと毎回指定する必要がなくなります:
+
+```bash
+insighta config --credentials credentials.yaml
+```
+
 > ⚠️ `credentials.yaml` には秘密情報が含まれます。`.gitignore` に追加済みですが、公開リポジトリへのコミットにご注意ください。
 
-## 3. Quick Start
+## 3. データの準備
+
+`input/sbi/` ディレクトリにファイルを置くだけで、ツールが自動的にファイル種別を判別してパースします。
+
+### 取得元と配置方法
+
+| データ | 取得元 | 形式 |
+|--------|--------|------|
+| **約定履歴** (必須) | [計座管理 → 取引履歴](https://site2.sbisec.co.jp/ETGate/?_ControlID=WPLETacR007Control&_PageID=DefaultPID&_DataStoreID=DSWPLETacR007Control&getFlg=on&_ActionID=DefaultAID&OutSide=on) | CSV (Shift_JIS) |
+| **保有銘柄** (検証用) | 外国株式 → 口座管理 → 保有銘柄 | HTML (Copy outerHTML) |
+| **為替取引履歴** | https://member.c.sbisec.co.jp/banking/fc/activity-history | CSV (Shift_JIS) |
+| **外貨入出金明細** | https://member.c.sbisec.co.jp/banking/fc/detail-history | CSV (Shift_JIS) |
+| **入出金振替履歴** | 入出金・振替 | CSV (Shift_JIS) |
+| **配当金** | https://member.c.sbisec.co.jp/banking/fc/detail-history | CSV (Shift_JIS) |
+
+> 💡 約定履歴は **計座管理 → 取引履歴** から取得してください。ここには約定単価だけでなく受渡金額（手数料・税金込み）も含まれるため、正確なコスト計算が可能です。
+> 2024年以前のデータは **計座管理 → 取引報告書** から確認できます。
+
+### 自動認識されるファイル種別
+
+| 種別 | 判別条件 |
+|------|----------|
+| 約定履歴CSV | ヘッダーに「国内約定日」「約定数量」を含む |
+| 保有銘柄HTML | `stock-holding-table` を含むHTML |
+| 取引履歴HTML | `table-row` + `sticker` を含むHTML |
+| 投信約定CSV | ヘッダーに「約定履歴照会」を含む |
+| 為替取引CSV | ヘッダーに「為替取引注文履歴」を含む |
+| 外貨入出金CSV | ヘッダーに「外貨入出金明細」を含む |
+| 入出金振替CSV | ヘッダーに「入出金振替操作履歴」を含む |
+| 配当金CSV | ヘッダーに「検索件数」+「受渡日」を含む |
+
+すべてのファイルを `workspaces/<name>/input/sbi/` に配置するだけで OK です。
+
+### 手動入力 (input/manual/)
+
+自動認識できないデータや、ツール導入前の保有分を手動で登録する場合:
+
+| ファイル | 配置先 | 用途 |
+|----------|--------|------|
+| seed.csv | `input/manual/seed.csv` | ツール導入前の保有銘柄 |
+| rate.csv | `input/rate.csv` | 期間別為替レート |
+| ratio.csv | `input/ratio.csv` | 銘柄別ポートフォリオ比率 |
+
+## 4. Quick Start
 
 `--work` オプションで作業ディレクトリを指定します。各ポートフォリオのデータは `workspaces/<name>/` 以下に格納されます。
 
@@ -64,33 +113,50 @@ API キーは https://insighta.cloud/settings から取得できます。
 insighta --work sbi-us-stocks
 ```
 
-引数なしで実行すると、対話式ウィザードが HTML配置 → パース → 検証 → アップロード まで順番に案内します。
+引数なしで実行すると、対話式ウィザードが データ配置 → パース → 検証 → アップロード まで順番に案内します。
 
 > 💡 `--work` を省略した場合はプロジェクトルートの `input/` / `output/` を使用します（後方互換）。
 
-## 4. コマンド一覧
+## 5. コマンド一覧
+
+### メインワークフロー
 
 | コマンド | 説明 |
 |---------|------|
 | `insighta --work <name>` | 対話式ウィザード（全ステップ一括） |
-| `insighta --work <name> parse` | 取引履歴HTMLをパース → `output/history.csv` |
-| `insighta --work <name> verify` | CSV集計 vs HTML実際保有の照合 |
+| `insighta --work <name> parse` | `input/sbi/` を自動分類・パース → `output/history.csv` |
+| `insighta --work <name> verify` | CSV集計 vs 保有銘柄HTMLの照合 |
 | `insighta --work <name> analyze` | 実現/未実現損益 + 総合ROI |
-| `insighta --work <name> prepare` | アップロード用ファイル生成（`upload.yaml` + `output/order.csv`） |
+| `insighta --work <name> prepare` | アップロード用ファイル生成（`upload.yaml` + `order.csv`） |
 | `insighta --work <name> upload` | Insighta API へポートフォリオデータを送信 |
 
-> **初期予算の目安**: 全注文の購入コスト合計をカバーできる金額を設定してください。
-> ポートフォリオ通貨が JPY の場合、USD 建て注文は `価格 × 数量 × 為替レート` で円換算し、JPY 建て注文と合算した金額が目安です。
+### API管理
+
+| コマンド | 説明 |
+|---------|------|
+| `insighta config --credentials <path>` | credentials パスを保存 |
+| `insighta list-portfolios` | 自分のポートフォリオ一覧を取得 |
+| `insighta search-portfolios --search <keyword>` | 公開ポートフォリオを検索 |
+| `insighta delete-portfolio <id> -y` | ポートフォリオを削除 |
+| `insighta nav-history <id>` | NAV履歴を取得 |
+| `insighta metrics-history <id> --metrics twr` | メトリクス履歴を取得 |
+
+> すべてのAPI管理コマンドは `--output-json` フラグで JSON 出力に対応しています。
+
+### 使用例
 
 ```bash
 insighta --work sbi-us-stocks parse --rate 155                    # 固定為替レート指定
 insighta --work sbi-us-stocks parse --rate-file input/rate.csv    # 期間別為替レートCSV
-insighta --work sbi-us-stocks upload --credentials credentials.yaml --config workspaces/sbi-us-stocks/output/upload.yaml
+insighta --work sbi-us-stocks upload --config workspaces/sbi-us-stocks/output/upload.yaml -y
 ```
+
+> **初期予算の目安**: 全注文の購入コスト合計をカバーできる金額を設定してください。
+> ポートフォリオ通貨が JPY の場合、USD 建て注文は `価格 × 数量 × 為替レート` で円換算し、JPY 建て注文と合算した金額が目安です。
 
 ---
 
-## 5. ポートフォリオ名・説明・注文メモの書き方
+## 6. ポートフォリオ名・説明・注文メモの書き方
 
 Insighta Cloud のポートフォリオは **運用記録** です。
 名前・説明・注文メモには「何を買った/売った」ではなく、**どういう方針で運用しているか** を記載してください。
@@ -140,48 +206,32 @@ Insighta Cloud のポートフォリオは **運用記録** です。
 
 ---
 
-## 6. CSV フォーマット詳細
+## 7. CSV フォーマット詳細
 
-### 5.1 seed CSV
+### seed CSV
 
-ツール導入前の保有分を手動で登録する場合に使用。`workspaces/<name>/input/seed/` に配置。
+ツール導入前の保有分を手動で登録する場合に使用。`workspaces/<name>/input/manual/seed.csv` に配置。
 
 ```csv
 dt,ticker,qty,acct,price,avg,cur,base,rate
 2021/10/25 00:00,AAPL,1,TT,149.50,149.50,JPY,USD,113.96
 ```
 
-### 5.2 deposit CSV
+### rate CSV
 
-入金履歴・配当金を手動で管理する場合に使用。`workspaces/<name>/input/deposit/` に配置。
+通貨ペアごとに期間とレートを定義。`workspaces/<name>/input/rate.csv` に配置。
 
 ```csv
-dt,type,amount,cur,ticker,rate
-2025/01/15 09:00,budget,100000,JPY,,148.20
-2025/06/01 10:30,budget,500,USD,,
-2025/03/15 09:00,dividend,12.50,USD,AAPL,
+from,to,pair,rate
+2024/01/01,2024/12/31,USD/JPY,155.50
+2025/01/01,2025/12/31,USD/JPY,148.20
+2026/02/19 09:00,2026/02/19 15:00,USD/JPY,155.38
 ```
 
-| カラム | 説明 |
-|--------|------|
-| `dt` | 日時（`2025/01/15` または `2025/01/15 09:00`） |
-| `type` | `budget`（入金） / `dividend`（配当金） |
-| `amount` | 金額（マイナスで出金） |
-| `cur` | 通貨（JPY, USD など） |
-| `ticker` | 配当金の場合のみ銘柄指定 |
-| `rate` | 為替レート（任意。空欄の場合は rate.csv から自動取得） |
+`from`/`to` は日付のみ (`2024/01/01`) でも、時刻付き (`2024/01/01 09:00`) でも可。
+日付のみの場合は `00:00`〜`23:59` として扱います。
 
-### 5.3 currency_exchange CSV
-
-SBI証券の外貨積立・為替取引履歴CSVを自動取り込み。`workspaces/<name>/input/currency_exchange/` に配置。
-
-https://member.c.sbisec.co.jp/banking/fc/activity-history からCSVをダウンロードして配置するだけで自動認識されます。
-
-- ファイルエンコーディング: Shift_JIS（ダウンロードしたままで可）
-- 1件の約定 → JPY出金 + 外貨入金（または外貨出金 + JPY入金）の2イベントとして処理
-- `買付`（JPY→外貨）・`売付`（外貨→JPY）の両方に対応
-
-### 5.4 ratio CSV
+### ratio CSV
 
 銘柄ごとのポートフォリオ比率を指定。`workspaces/<name>/input/ratio.csv` に配置。
 
@@ -196,19 +246,7 @@ AAPL,0.2
 - ファイルがない場合は全銘柄を均等配分
 - 現金比率はサーバー側で自動計算されるため指定不要
 
-### 5.5 rate CSV
-
-通貨ペアごとに期間とレートを定義。`workspaces/<name>/input/rate.csv` に配置。
-
-```csv
-from,to,pair,rate
-2024/01/01,2024/12/31,USD/JPY,155.50
-2025/01/01,2025/12/31,USD/JPY,148.20
-2026/02/19 09:00,2026/02/19 15:00,USD/JPY,155.38
-```
-
-`from`/`to` は日付のみ (`2024/01/01`) でも、時刻付き (`2024/01/01 09:00`) でも可。
-日付のみの場合は `00:00`〜`23:59` として扱います。
+---
 
 ## Support
 
@@ -217,7 +255,7 @@ from,to,pair,rate
 ## Disclaimer
 
 - このツールは [insighta cloud Inc.](https://insighta.cloud) が個人投資家の資産管理を支援する目的で開発したものであり、SBI証券株式会社とは一切関係がありません。SBI証券の名称・ロゴ・サービスに関するすべての権利はSBI証券株式会社に帰属します。
-- このツールはSBI証券のWebサイトをクローリング・スクレイピングしません。ユーザーが自身のブラウザから手動で保存したHTMLファイルをローカルで解析するのみです。
+- このツールはSBI証券のWebサイトをクローリング・スクレイピングしません。ユーザーが自身のブラウザから手動で保存したファイルをローカルで解析するのみです。
 - このツールは投資助言を目的としたものではありません。分析結果は参考情報であり、投資判断はご自身の責任で行ってください。
 - パース結果の正確性は保証されません。アップロード前に必ず `verify` コマンドでデータを確認してください。
 - このツールは商業目的での利用はできません。詳細は [LICENSE](LICENSE) をご確認ください。
