@@ -112,20 +112,22 @@ class OrderGroup:
 
 
 def load_order_groups(filepath: str) -> list[OrderGroup]:
-    """order.csv를 읽어서 group_dt별로 묶어 반환."""
+    """order.csv를 읽어서 (group_dt, settle_currency)별로 묶어 반환."""
     from collections import OrderedDict
-    groups: OrderedDict[str, OrderGroup] = OrderedDict()
+    groups: OrderedDict[tuple, OrderGroup] = OrderedDict()
     with open(filepath, "r", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             gdt = row["group_dt"]
+            settle_cur = row.get("settle_currency", row["currency"])
             rate_val = row.get("rate", "").strip() if row.get("rate") else ""
-            if gdt not in groups:
-                groups[gdt] = OrderGroup(
+            key = (gdt, settle_cur)
+            if key not in groups:
+                groups[key] = OrderGroup(
                     group_id=gdt,
-                    currency=row.get("settle_currency", row["currency"]),
+                    currency=settle_cur,
                     exchange_rate=float(rate_val) if rate_val else None,
                 )
-            groups[gdt].items.append({
+            groups[key].items.append({
                 "id": row["ticker"],
                 "ticker": row["ticker"],
                 "quantity": float(row["quantity"]),
@@ -161,11 +163,19 @@ def merge_and_sort_groups(orders: list[OrderGroup], deposits_by_gdt: dict[str, l
         if gdt not in existing_gdts:
             cur = deps[0].currency or "USD"
             orders.append(OrderGroup(group_id=gdt, currency=cur))
-    # 같은 group_dt의 deposit을 주문 그룹에 붙임
+    # 같은 group_dt의 deposit을 주문 그룹에 붙임 (통화별 분배)
     deps_map = dict(deposits_by_gdt)
     for g in orders:
         if g.group_id in deps_map:
-            g.cash_deposits = deps_map[g.group_id]
+            # 같은 group_id를 가진 그룹이 여러 개일 수 있으므로 deposit을 통화별로 분배
+            matched = [d for d in deps_map[g.group_id] if (d.currency or g.currency) == g.currency]
+            unmatched = [d for d in deps_map[g.group_id] if (d.currency or g.currency) != g.currency]
+            if matched:
+                g.cash_deposits = matched
+            elif not any(o for o in orders if o.group_id == g.group_id and o is not g):
+                # 같은 group_id의 다른 그룹이 없으면 전부 할당
+                g.cash_deposits = deps_map[g.group_id]
+            # unmatched는 다른 그룹이 가져갈 것이므로 남겨둠
     # group_dt(= 첫 번째 주문 timestamp 또는 deposit timestamp) 기준 정렬
     def _sort_key(g: OrderGroup):
         ts = _parse_timestamp(g.group_id)

@@ -75,9 +75,9 @@ def parse(obj, rate, rate_file):
             r = lookup_rate(rates, t.dt, t.cur, t.base) if rates else (rate if t.cur != t.base else "")
             w.writerow([t.dt, t.ticker, t.qty, t.acct, t.price, t.avg, t.cur, t.base, r or ""])
 
-    # deposits を deposit ディレクトリに保存
-    _os.makedirs(dirs.deposit, exist_ok=True)
-    dep_out = _os.path.join(dirs.deposit, "_auto_deposits.csv")
+    # deposits を .cache ディレクトリに保存
+    _os.makedirs(dirs.cache, exist_ok=True)
+    dep_out = _os.path.join(dirs.cache, "_auto_deposits.csv")
     if result.deposits:
         with open(dep_out, "w", newline="", encoding="utf-8") as f:
             f.write("insighta-deposit\n")

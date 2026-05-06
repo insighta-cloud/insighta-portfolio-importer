@@ -51,6 +51,10 @@ class Dirs:
         return os.path.join(self._base, "output") if self._base else "output"
 
     @property
+    def cache(self) -> str:
+        return os.path.join(self._base, ".cache") if self._base else ".cache"
+
+    @property
     def history(self) -> str:
         return os.path.join(self.input, "history")
 
