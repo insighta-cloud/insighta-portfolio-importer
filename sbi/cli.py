@@ -59,9 +59,16 @@ def parse(obj, rate, rate_file):
                 rate_file = candidate
                 break
 
-    from .parser import process_sbi_dir
-    result = process_sbi_dir(dirs.sbi, rate_file=rate_file,
-                             cache_dir=_os.path.join(dirs._base or ".", ".cache"))
+    from .parser import process_sbi_dir, load_manual_deposits
+    cache_dir = _os.path.join(dirs._base or ".", ".cache")
+    result = process_sbi_dir(dirs.sbi, rate_file=rate_file)
+    for d in load_manual_deposits(dirs.manual):
+        result.deposits.append(d)
+    result.deposits, dup = result.deposits, []
+    from .parser import _dedup_deposits, _save_cache
+    result.deposits, dup2 = _dedup_deposits(result.deposits)
+    result.skipped.extend(dup2)
+    _save_cache(result, cache_dir)
 
     rates = load_rate_file(rate_file) if rate_file else []
 
@@ -121,6 +128,10 @@ def _run_verify(dirs) -> bool:
             rate_file = candidate
             break
     _v2_result = process_sbi_dir(dirs.sbi, rate_file=rate_file)
+    from .parser import load_manual_deposits, _dedup_deposits
+    for d in load_manual_deposits(dirs.manual):
+        _v2_result.deposits.append(d)
+    _v2_result.deposits, _ = _dedup_deposits(_v2_result.deposits)
 
     # CSV集計から移動平均法で取得単価を計算（売却時は平均単価維持、買付時に再計算）
     _avg_price: dict[str, float] = {}
@@ -532,7 +543,7 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
     # --- Merge same ticker+price within group ---
     merged_rows: dict[tuple, dict] = {}
     for row in order_rows:
-        key = (row["group_dt"], row["ticker"], row["price"])
+        key = (row["group_dt"], row["ticker"], row["price"], row["settle_currency"])
         if key in merged_rows:
             merged_rows[key]["quantity"] = str(int(merged_rows[key]["quantity"]) + int(row["quantity"]))
         else:

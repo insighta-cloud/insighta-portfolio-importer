@@ -310,11 +310,11 @@ def _parse_sbi_exchange(filepath: str) -> list[Deposit]:
             continue
         dt_iso = _to_jst_iso(dt_raw)
         if order_type == "買付":
-            deposits.append(Deposit(dt=dt_iso, amount=-jpy_amount, cur="JPY", type="budget", rate=rate))
-            deposits.append(Deposit(dt=dt_iso, amount=qty, cur=foreign_cur, type="budget", rate=rate))
+            deposits.append(Deposit(dt=dt_iso, amount=-jpy_amount, cur="JPY", type="profit", rate=rate))
+            deposits.append(Deposit(dt=dt_iso, amount=qty, cur=foreign_cur, type="profit", rate=rate))
         elif order_type == "売付":
-            deposits.append(Deposit(dt=dt_iso, amount=-qty, cur=foreign_cur, type="budget", rate=rate))
-            deposits.append(Deposit(dt=dt_iso, amount=jpy_amount, cur="JPY", type="budget", rate=rate))
+            deposits.append(Deposit(dt=dt_iso, amount=-qty, cur=foreign_cur, type="profit", rate=rate))
+            deposits.append(Deposit(dt=dt_iso, amount=jpy_amount, cur="JPY", type="profit", rate=rate))
     return deposits
 
 
@@ -683,7 +683,7 @@ def _parse_yakujo_csv(filepath: str, rates=None) -> ParseResult:
         else:
             continue
 
-        if fee > 0:
+        if fee != 0:
             result.deposits.append(Deposit(
                 dt=dt_iso, amount=-fee, cur=cur,
                 type="budget", ticker=f"fee:{ticker}",
@@ -720,7 +720,7 @@ def _parse_domestic_fund(filepath: str) -> ParseResult:
             dt=_to_jst_iso(dt_raw),
             amount=amount,
             cur="JPY",
-            type="budget",
+            type="profit",
             ticker=meigara,
         ))
     return result
@@ -839,3 +839,37 @@ def _save_cache(result: ParseResult, cache_dir: str):
     if result.warnings:
         with open(os.path.join(cache_dir, "warnings.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(result.warnings))
+
+
+def load_manual_deposits(manual_dir: str) -> list[Deposit]:
+    """input/manual/deposit.csv を読み込んで Deposit リストを返す。
+
+    フォーマット:
+        insighta-deposit          ← 1行目 (識別子)
+        dt,type,amount,cur,ticker,rate
+        2026/04/25 00:00,budget,-40493.90,JPY,,
+    """
+    fp = os.path.join(manual_dir, "deposit.csv")
+    if not os.path.exists(fp):
+        return []
+    deposits = []
+    with open(fp, encoding="utf-8", newline="") as f:
+        lines = f.readlines()
+    # 1行目が 'insighta-deposit' なら skip
+    start = 1 if lines and lines[0].strip() == "insighta-deposit" else 0
+    for row in csv.DictReader(lines[start:]):
+        dt_raw = row["dt"].strip()
+        try:
+            amount = Decimal(row["amount"].strip())
+        except Exception:
+            continue
+        rate_str = (row.get("rate") or "").strip()
+        deposits.append(Deposit(
+            dt=_to_jst_iso(dt_raw),
+            amount=amount,
+            cur=row["cur"].strip(),
+            type=row["type"].strip(),
+            ticker=(row.get("ticker") or "").strip(),
+            rate=Decimal(rate_str) if rate_str else None,
+        ))
+    return deposits
