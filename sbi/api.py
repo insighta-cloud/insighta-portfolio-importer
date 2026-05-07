@@ -71,7 +71,6 @@ class UploadConfig:
     start_date: str = ""
     target_date: str = ""
     items: list = field(default_factory=list)
-    cash_deposits_file: str | None = None
     memo_file: str | None = None
     settings: dict | None = None
 
@@ -93,7 +92,6 @@ class UploadConfig:
             target_date=p.get("target_date", ""),
             items=p.get("items", []),
             order_file=files["order"],
-            cash_deposits_file=files.get("cash_deposits"),
             memo_file=files.get("memo"),
             settings=p.get("settings"),
         )
@@ -112,6 +110,7 @@ class CashDeposit:
 class OrderGroup:
     group_id: str
     currency: str
+    group_dt: str = ""
     items: list = field(default_factory=list)
     cash_deposits: list[CashDeposit] = field(default_factory=list)
     exchange_rate: float | None = None
@@ -119,86 +118,53 @@ class OrderGroup:
 
 
 def load_order_groups(filepath: str) -> list[OrderGroup]:
-    """order.csv를 읽어서 (group_dt, settle_currency)별로 묶어 반환."""
+    """orders.csv를 읽어서 group_id별로 묶어 반환. type 컬럼으로 order/fee/budget/dividend 구분."""
     from collections import OrderedDict
-    groups: OrderedDict[tuple, OrderGroup] = OrderedDict()
+    groups: OrderedDict[str, OrderGroup] = OrderedDict()
     with open(filepath, "r", encoding="utf-8") as f:
         for row in csv.DictReader(f):
+            gid = row["group_id"]
             gdt = row["group_dt"]
-            settle_cur = row.get("settle_currency", row["currency"])
+            row_type = row.get("type", "order")
+            settle_cur = row.get("settle_currency", "") or row.get("currency", "")
             rate_val = row.get("rate", "").strip() if row.get("rate") else ""
-            key = (gdt, settle_cur)
-            if key not in groups:
-                groups[key] = OrderGroup(
-                    group_id=_group_hash(gdt, settle_cur),
-                    currency=settle_cur,
+            if gid not in groups:
+                groups[gid] = OrderGroup(
+                    group_id=gid,
+                    currency=settle_cur or "USD",
+                    group_dt=gdt,
                     exchange_rate=float(rate_val) if rate_val else None,
                 )
-            groups[key].items.append({
-                "id": row["ticker"],
-                "ticker": row["ticker"],
-                "quantity": float(row["quantity"]),
-                "price": float(row["price"]),
-                "currency": row["currency"],
-                "price_type": row["price_type"],
-                "timestamp": _parse_timestamp(row.get("timestamp", "")),
-            })
-    return list(groups.values())
+            g = groups[gid]
+            if not g.currency and settle_cur:
+                g.currency = settle_cur
+            if rate_val and not g.exchange_rate:
+                g.exchange_rate = float(rate_val)
+            if row_type == "order":
+                g.items.append({
+                    "id": row["ticker"],
+                    "ticker": row["ticker"],
+                    "quantity": float(row["quantity"]),
+                    "price": float(row["price"]),
+                    "currency": row["currency"],
+                    "price_type": row["price_type"],
+                    "timestamp": _parse_timestamp(row.get("timestamp", "")),
+                })
+            else:
+                # fee, budget, dividend, etc → cash_deposits
+                g.cash_deposits.append(CashDeposit(
+                    type="budget" if row_type == "fee" else row_type,
+                    amount=float(row["price"]),
+                    currency=row.get("currency") or None,
+                    ticker=row.get("ticker") or None,
+                    timestamp=_parse_timestamp(row.get("timestamp", "")),
+                ))
+    # group_dt 기준 시간순 정렬
+    result = list(groups.values())
+    result.sort(key=lambda g: _parse_timestamp(g.group_dt) or float("inf"))
+    return result
 
 
-def load_cash_deposits(filepath: str) -> dict[str, list[CashDeposit]]:
-    """cash_deposits.csv를 읽어서 group_dt별로 묶어 반환."""
-    groups: dict[str, list[CashDeposit]] = {}
-    with open(filepath, "r", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            gdt = row["group_dt"]
-            groups.setdefault(gdt, []).append(CashDeposit(
-                type=row["type"],
-                amount=float(row["amount"]),
-                currency=row.get("currency") or None,
-                ticker=row.get("ticker") or None,
-                timestamp=_parse_timestamp(row.get("timestamp", "")),
-            ))
-    return groups
-
-
-def merge_and_sort_groups(orders: list[OrderGroup], deposits_by_gdt: dict[str, list[CashDeposit]], memos: dict[str, str]) -> list[OrderGroup]:
-    """order + deposit을 group_dt 기준으로 머지하고 시간순 정렬 후 1부터 번호 배정."""
-    # 주문 그룹의 group_id → currency 매핑
-    existing_curs: dict[str, set[str]] = {}
-    for g in orders:
-        existing_curs.setdefault(g.group_id, set()).add(g.currency)
-
-    # deposit을 통화별로 분배: 매칭되는 주문 그룹이 없으면 새 그룹 생성
-    deps_map = dict(deposits_by_gdt)
-    for gdt, deps in deps_map.items():
-        by_cur: dict[str, list[CashDeposit]] = {}
-        for d in deps:
-            c = d.currency or "USD"
-            by_cur.setdefault(c, []).append(d)
-        for cur, cur_deps in by_cur.items():
-            if gdt not in existing_curs or cur not in existing_curs[gdt]:
-                g = OrderGroup(group_id=_group_hash(gdt, cur), currency=cur)
-                g.cash_deposits = cur_deps
-                orders.append(g)
-                existing_curs.setdefault(gdt, set()).add(cur)
-
-    # 같은 group_dt + currency의 deposit을 주문 그룹에 붙임
-    for g in orders:
-        if g.group_id in deps_map and not g.cash_deposits:
-            matched = [d for d in deps_map[g.group_id] if (d.currency or g.currency) == g.currency]
-            if matched:
-                g.cash_deposits = matched
-    # group_dt(= 첫 번째 주문 timestamp 또는 deposit timestamp) 기준 정렬
-    def _sort_key(g: OrderGroup):
-        ts = _parse_timestamp(g.group_id)
-        return ts if ts is not None else float("inf")
-    orders.sort(key=_sort_key)
-    # 메모 적용
-    for g in orders:
-        if g.group_id in memos:
-            g.memo = memos[g.group_id]
-    return orders
 
 
 def fetch_ticker_info(tickers: list[str]) -> dict[str, dict]:

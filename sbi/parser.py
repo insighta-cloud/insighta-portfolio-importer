@@ -96,11 +96,11 @@ class Dirs:
 
     @property
     def history_csv(self) -> str:
-        return os.path.join(self.output, "history.csv")
+        return os.path.join(self.cache, "_history.csv")
 
     @property
     def order_csv(self) -> str:
-        return os.path.join(self.output, "order.csv")
+        return os.path.join(self.output, "orders.csv")
 
     @property
     def upload_yaml(self) -> str:
@@ -109,10 +109,6 @@ class Dirs:
     @property
     def memo_csv(self) -> str:
         return os.path.join(self.output, "memo.csv")
-
-    @property
-    def cash_deposits_csv(self) -> str:
-        return os.path.join(self.output, "cash_deposits.csv")
 
     @property
     def request_payload_log(self) -> str:

@@ -76,7 +76,8 @@ def parse(obj, rate, rate_file):
 
     rates = load_rate_file(rate_file) if rate_file else []
 
-    # history.csv 出力
+    # history.csv 出力 (.cache/_history.csv)
+    _os.makedirs(dirs.cache, exist_ok=True)
     out = dirs.history_csv
     deduped = sorted(result.trades, key=lambda t: t.dt, reverse=True)
     with open(out, "w", newline="", encoding="utf-8") as f:
@@ -87,7 +88,6 @@ def parse(obj, rate, rate_file):
             w.writerow([t.dt, t.ticker, t.qty, t.acct, t.price, t.avg, t.cur, t.base, r or "", t.settle if t.settle is not None else ""])
 
     # deposits を .cache ディレクトリに保存
-    _os.makedirs(dirs.cache, exist_ok=True)
     dep_out = _os.path.join(dirs.cache, "_auto_deposits.csv")
     if result.deposits:
         with open(dep_out, "w", newline="", encoding="utf-8") as f:
@@ -519,11 +519,12 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
         })
 
     # --- Assign group_dt (대표 UTC timestamp) ---
-    # group_dt = 그룹 내 첫 번째 주문의 timestamp (UTC, YYYY-MM-DD HH:MM:SS)
+    # 주문 그룹핑: (date_key, settle_currency, rate) 키로 그룹핑
+    from .api import _group_hash
     if do_group:
-        group_dt_map: dict[tuple, str] = {}  # (date_key, settle_currency) -> group_dt
+        group_dt_map: dict[tuple, str] = {}  # (date_key, settle_currency, rate) -> group_dt
         for row in order_rows:
-            key = (row["date_key"], row["settle_currency"])
+            key = (row["date_key"], row["settle_currency"], row["rate"])
             if key not in group_dt_map:
                 group_dt_map[key] = row["timestamp"] or row["date_key"] + " 00:00:00"
             row["group_dt"] = group_dt_map[key]
@@ -556,48 +557,122 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
             merged_rows[key] = dict(row)
     order_rows = sorted(merged_rows.values(), key=lambda r: r["timestamp"] or "")
 
-    # --- Write order.csv ---
+    # --- Process deposits: fee → 주문 그룹에 합류, 나머지 → timestamp로 그룹핑 ---
+    deposits = _v2_deposits
+    import re as _re
+
+    def _parse_deposit_dt(d):
+        try:
+            if _re.match(r"\d{4}-\d{2}-\d{2}T", d.dt):
+                dt_obj = datetime.fromisoformat(d.dt)
+                if dt_obj.tzinfo is None:
+                    dt_obj = dt_obj.replace(tzinfo=tz)
+                return dt_obj
+            elif _re.match(r"\d{4}/\d+/\d+ \d+:\d+", d.dt):
+                return datetime.strptime(d.dt, "%Y/%m/%d %H:%M").replace(tzinfo=tz)
+            else:
+                return datetime.strptime(d.dt[:10], "%Y/%m/%d").replace(tzinfo=tz)
+        except (ValueError, AttributeError):
+            return datetime.max.replace(tzinfo=tz)
+
+    def _deposit_ts(d) -> str:
+        dt_obj = _parse_deposit_dt(d)
+        return dt_obj.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if dt_obj.year < 9999 else ""
+
+    # 주문 그룹의 group_dt → group_id 매핑 (settle_currency 포함)
+    order_group_ids: dict[str, str] = {}  # group_dt -> group_id
+    order_group_curs: dict[str, str] = {}  # group_dt -> settle_currency
+    for row in order_rows:
+        gdt = row["group_dt"]
+        if gdt not in order_group_ids:
+            order_group_ids[gdt] = _group_hash(gdt, row["settle_currency"])
+            order_group_curs[gdt] = row["settle_currency"]
+
+    # fee deposit을 주문 그룹에 매칭 (같은 date_key 기준)
+    fee_rows = []  # fee를 orders.csv에 쓸 행들
+    non_order_deposits = []  # 비주문 deposit들
+    if deposits:
+        # 주문의 date_key → group_dt 매핑
+        date_to_gdt: dict[str, str] = {}
+        for row in order_rows:
+            dk = row["date_key"]
+            if dk not in date_to_gdt:
+                date_to_gdt[dk] = row["group_dt"]
+
+        for d in deposits:
+            ts = _deposit_ts(d)
+            if d.ticker and d.ticker.startswith("fee:"):
+                # fee deposit → 같은 날짜의 주문 그룹에 합류
+                d_date = _date_key(d.dt)
+                matched_gdt = date_to_gdt.get(d_date)
+                if matched_gdt:
+                    fee_rows.append({
+                        "group_id": order_group_ids[matched_gdt],
+                        "group_dt": matched_gdt,
+                        "type": "fee",
+                        "ticker": d.ticker,
+                        "quantity": "",
+                        "price": str(float(d.amount)),
+                        "currency": d.cur,
+                        "settle_currency": order_group_curs[matched_gdt],
+                        "rate": "",
+                        "price_type": "",
+                        "timestamp": ts,
+                    })
+                else:
+                    non_order_deposits.append(d)
+            else:
+                non_order_deposits.append(d)
+
+    # 비주문 deposit 그룹핑: timestamp 기준
+    non_order_rows = []
+    if non_order_deposits:
+        non_order_deposits.sort(key=_parse_deposit_dt)
+        ts_groups: dict[str, list] = {}
+        for d in non_order_deposits:
+            ts = _deposit_ts(d)
+            ts_groups.setdefault(ts, []).append(d)
+        for ts, deps in ts_groups.items():
+            gid = _group_hash(ts, "deposit")
+            for d in deps:
+                non_order_rows.append({
+                    "group_id": gid,
+                    "group_dt": ts,
+                    "type": d.type,
+                    "ticker": d.ticker or "",
+                    "quantity": "",
+                    "price": str(float(d.amount)),
+                    "currency": d.cur,
+                    "settle_currency": "",
+                    "rate": "",
+                    "price_type": "",
+                    "timestamp": _deposit_ts(d),
+                })
+
+    # --- Write orders.csv (통합 포맷) ---
     order_out = dirs.order_csv
     with open(order_out, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["group_id", "group_dt", "ticker", "quantity", "price", "currency", "settle_currency", "rate", "price_type", "timestamp"])
+        w.writerow(["group_id", "group_dt", "type", "ticker", "quantity", "price", "currency", "settle_currency", "rate", "price_type", "timestamp"])
+        # 주문 행
         for row in order_rows:
-            from .api import _group_hash
             w.writerow([
                 _group_hash(row["group_dt"], row["settle_currency"]),
-                row["group_dt"], row["ticker"], row["quantity"],
+                row["group_dt"], "order", row["ticker"], row["quantity"],
                 row["price"], row["currency"], row["settle_currency"], row["rate"], row["price_type"], row["timestamp"],
             ])
-
-    # --- Write cash_deposits.csv ---
-    deposits = _v2_deposits
-    cash_deposits_out = ""
-    if deposits:
-        import re as _re
-
-        def _parse_deposit_dt(d):
-            try:
-                if _re.match(r"\d{4}-\d{2}-\d{2}T", d.dt):
-                    dt_obj = datetime.fromisoformat(d.dt)
-                    if dt_obj.tzinfo is None:
-                        dt_obj = dt_obj.replace(tzinfo=tz)
-                    return dt_obj
-                elif _re.match(r"\d{4}/\d+/\d+ \d+:\d+", d.dt):
-                    return datetime.strptime(d.dt, "%Y/%m/%d %H:%M").replace(tzinfo=tz)
-                else:
-                    return datetime.strptime(d.dt[:10], "%Y/%m/%d").replace(tzinfo=tz)
-            except (ValueError, AttributeError):
-                return datetime.max.replace(tzinfo=tz)
-
-        deposits.sort(key=_parse_deposit_dt)
-        cash_deposits_out = dirs.cash_deposits_csv
-        with open(cash_deposits_out, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["group_dt", "type", "amount", "currency", "ticker", "timestamp"])
-            for d in deposits:
-                dt_obj = _parse_deposit_dt(d)
-                ts = dt_obj.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if dt_obj.year < 9999 else ""
-                w.writerow([ts, d.type, float(d.amount), d.cur, d.ticker, ts])
+        # fee 행
+        for row in fee_rows:
+            w.writerow([
+                row["group_id"], row["group_dt"], row["type"], row["ticker"], row["quantity"],
+                row["price"], row["currency"], row["settle_currency"], row["rate"], row["price_type"], row["timestamp"],
+            ])
+        # 비주문 행
+        for row in non_order_rows:
+            w.writerow([
+                row["group_id"], row["group_dt"], row["type"], row["ticker"], row["quantity"],
+                row["price"], row["currency"], row["settle_currency"], row["rate"], row["price_type"], row["timestamp"],
+            ])
 
     # --- Build portfolio items ---
     from .api import fetch_ticker_info
@@ -640,8 +715,6 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
     # --- Write upload.yaml ---
     memo_out = dirs.memo_csv
     files_config = {"order": order_out, "memo": memo_out}
-    if cash_deposits_out:
-        files_config["cash_deposits"] = cash_deposits_out
     upload_config = {
         "portfolio": {
             "name": name,
@@ -665,28 +738,21 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
     table.add_column("")
     table.add_column("", justify="right")
     table.add_row(m["prepare_trades"], str(len(order_rows)))
-    if deposits:
-        budget_count = sum(1 for d in deposits if d.type == "budget")
-        dividend_count = sum(1 for d in deposits if d.type == "dividend")
+    if non_order_deposits:
+        budget_count = sum(1 for d in non_order_deposits if d.type == "budget")
+        dividend_count = sum(1 for d in non_order_deposits if d.type == "dividend")
         if budget_count:
             table.add_row(m["prepare_budget_count"], str(budget_count))
         if dividend_count:
             table.add_row(m["prepare_dividend_count"], str(dividend_count))
-    group_count = len(set(r["group_dt"] for r in order_rows))
+    group_count = len(set(r["group_dt"] for r in order_rows)) + len(set(r["group_id"] for r in non_order_rows))
     table.add_row(m["prepare_groups"], str(group_count))
     table.add_row(m["prepare_grouping"], m["prepare_grouping_date"] if do_group else m["prepare_grouping_individual"])
     console.print(table)
 
     # --- Group preview ---
-    from .api import load_order_groups, load_cash_deposits, merge_and_sort_groups
-    preview_orders = load_order_groups(order_out)
-    preview_deposits = {}
-    if cash_deposits_out:
-        try:
-            preview_deposits = load_cash_deposits(cash_deposits_out)
-        except FileNotFoundError:
-            pass
-    preview_groups = merge_and_sort_groups(preview_orders, preview_deposits, {})
+    from .api import load_order_groups
+    preview_groups = load_order_groups(order_out)
     total_groups = len(preview_groups)
     group_memos: dict[str, str] = {}
     for g in preview_groups:
@@ -709,7 +775,7 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
         if memo:
             group_memos[g.group_id] = memo
 
-    # --- Write memo.csv (group_id = 순번, merge_and_sort_groups 기준) ---
+    # --- Write memo.csv ---
     memo_out = dirs.memo_csv
     with open(memo_out, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -778,7 +844,7 @@ def upload(obj, config, yes, lang, memo_file, output_json, dry_run):
     from rich.table import Table
     from rich.panel import Panel
     from rich.progress import Progress
-    from .api import Credentials, UploadConfig, InsightaClient, load_order_groups, load_cash_deposits, merge_and_sort_groups
+    from .api import Credentials, UploadConfig, InsightaClient, load_order_groups
 
     dirs = obj["dirs"]
     dirs.ensure_output()
@@ -796,25 +862,19 @@ def upload(obj, config, yes, lang, memo_file, output_json, dry_run):
         except FileNotFoundError:
             console.print(f"[yellow]Warning: {memo_path} not found, skipping memos.[/yellow]")
 
-    orders = load_order_groups(upload_cfg.order_file)
-    if not orders:
+    groups = load_order_groups(upload_cfg.order_file)
+    if not groups:
         console.print("[red]注文データが見つかりません。[/red]")
         return
+
+    # メモ適用
+    for g in groups:
+        if g.group_id in memos:
+            g.memo = memos[g.group_id]
 
     # 실제 전송 로그 초기화
     with open(dirs.request_payload_log, "w", encoding="utf-8") as _lf:
         pass
-
-    deposits = {}
-    if upload_cfg.cash_deposits_file:
-        try:
-            deposits = load_cash_deposits(upload_cfg.cash_deposits_file)
-            deposit_count = sum(len(v) for v in deposits.values())
-            console.print(f"[dim]Cash deposits loaded: {deposit_count} entries[/dim]")
-        except FileNotFoundError:
-            console.print(f"[yellow]Warning: {upload_cfg.cash_deposits_file} not found, skipping.[/yellow]")
-
-    groups = merge_and_sort_groups(orders, deposits, memos)
 
     order_groups = [g for g in groups if g.items]
     total_items = sum(len(g.items) for g in order_groups)
