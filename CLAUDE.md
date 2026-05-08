@@ -193,6 +193,8 @@ Memos entered during `prepare` group preview, or AI-generated memos, are saved t
 They are automatically loaded during `upload` and applied to each group.
 Use `--memo-file` to specify an alternative file (override).
 
+> ⚠️ **Running `prepare` will overwrite `memo.csv`.** If you have manually written or AI-generated memos, back them up before re-running `prepare`.
+
 ### memo.csv format
 
 The key is the group number shown in the `prepare` preview (1, 2, 3...) — orders, dividends, and deposits merged in chronological order.

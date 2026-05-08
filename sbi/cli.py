@@ -783,11 +783,16 @@ def prepare(obj, locale, history_file, seed_file, rate_file, non_interactive,
 
     # --- Write memo.csv ---
     memo_out = dirs.memo_csv
-    with open(memo_out, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["order_group", "memo"])
-        for gid, memo in group_memos.items():
-            w.writerow([gid, memo])
+    if _os.path.exists(memo_out) and not ni:
+        if not click.confirm(f"[warning] {memo_out} already exists and will be overwritten. Continue?", default=False):
+            console.print("[dim]memo.csv was preserved.[/dim]")
+            memo_out = None
+    if memo_out:
+        with open(memo_out, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["order_group", "memo"])
+            for gid, memo in group_memos.items():
+                w.writerow([gid, memo])
 
     console.print(Panel(f"[bold green]{m['prepare_done'].format(order=order_out, yaml=yaml_out)}[/bold green]"))
 

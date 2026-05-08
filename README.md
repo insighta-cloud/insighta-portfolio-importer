@@ -239,6 +239,7 @@ insighta cloud のポートフォリオは **運用記録** です。
 
 > 💡 対話式ウィザードでは `prepare` 実行時にグループごとにメモを入力できます。入力したメモは `workspaces/<name>/output/memo.csv` に保存され、`upload` 時に自動で適用されます。
 > 🤖 AI エージェント利用時は `prepare` 後に `workspaces/<name>/output/memo.csv` を生成して `upload` してください。詳細は [README.ai.md](README.ai.md) を参照。
+> ⚠️ `prepare` を再実行すると `memo.csv` が上書きされます。手動で作成したメモがある場合はバックアップしてください。
 
 ---
 
