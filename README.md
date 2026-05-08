@@ -69,14 +69,14 @@ endpoint: "https://openapi.insighta.cloud"
 
 ### 取得元と配置方法
 
-| データ | 取得元 | 形式 |
-|--------|--------|------|
-| **約定履歴** (必須) | [計座管理 → 取引履歴](https://site2.sbisec.co.jp/ETGate/?_ControlID=WPLETacR007Control&_PageID=DefaultPID&_DataStoreID=DSWPLETacR007Control&getFlg=on&_ActionID=DefaultAID&OutSide=on) | CSV (Shift_JIS) |
-| **保有銘柄** (検証用) | 外国株式 → 口座管理 → 保有銘柄 | HTML (Copy outerHTML) |
-| **為替取引履歴** | https://member.c.sbisec.co.jp/banking/fc/activity-history | CSV (Shift_JIS) |
-| **外貨入出金明細** | https://member.c.sbisec.co.jp/banking/fc/detail-history | CSV (Shift_JIS) |
-| **入出金振替履歴** | 入出金・振替 | CSV (Shift_JIS) |
-| **配当金** | https://member.c.sbisec.co.jp/banking/fc/detail-history | CSV (Shift_JIS) |
+| データ | 取得元 | 形式 | 範囲 |
+|--------|--------|------|------|
+| **約定履歴** | [計座管理 → 取引履歴](https://site2.sbisec.co.jp/ETGate/?_ControlID=WPLETacR007Control&_PageID=DefaultPID&_DataStoreID=DSWPLETacR007Control&getFlg=on&_ActionID=DefaultAID&OutSide=on) | CSV (Shift_JIS) | 海外株式の売買注文 |
+| **為替取引履歴** | [入出金 → 操作履歴 → 外貨操作履歴](https://member.c.sbisec.co.jp/banking/fc/activity-history) | CSV (Shift_JIS) | 円↔外貨の為替取引 |
+| **外貨入出金明細** | [入出金 → 入出金明細 → 外貨入出金明細](https://member.c.sbisec.co.jp/banking/fc/detail-history) | CSV (Shift_JIS) | 配当金・外貨入出金 |
+| **入出金振替履歴** | [入出金 → 入出金明細 → 円貨入出金明細](https://member.c.sbisec.co.jp/banking/yen/detail-history) | CSV (Shift_JIS) | 円貨の入金・出金・振替 |
+| **投信約定履歴** | [投資信託 → 注文照会 → 約定履歴](https://member.c.sbisec.co.jp/fund/refer/trade-history) | CSV (Shift_JIS) | 投資信託の買付・解約 |
+| **保有銘柄** (検証用) | [外国株式 → 口座管理 → 保有銘柄](https://member.c.sbisec.co.jp/foreign/account/summary) | HTML (Copy outerHTML) | 現在の保有銘柄・数量・評価額 |
 
 > 💡 約定履歴は **計座管理 → 取引履歴** から取得してください。ここには約定単価だけでなく受渡金額（手数料・税金込み）も含まれるため、正確なコスト計算が可能です。
 > 2024年以前のデータは **計座管理 → 取引報告書** から確認できます。
@@ -86,13 +86,11 @@ endpoint: "https://openapi.insighta.cloud"
 | 種別 | 判別条件 |
 |------|----------|
 | 約定履歴CSV | ヘッダーに「国内約定日」「約定数量」を含む |
-| 保有銘柄HTML | `stock-holding-table` を含むHTML |
-| 取引履歴HTML | `table-row` + `sticker` を含むHTML |
 | 投信約定CSV | ヘッダーに「約定履歴照会」を含む |
 | 為替取引CSV | ヘッダーに「為替取引注文履歴」を含む |
-| 外貨入出金CSV | ヘッダーに「外貨入出金明細」を含む |
+| 外貨入出金CSV | ヘッダーに「外貨入出金明細」を含む (配当金も含む) |
 | 入出金振替CSV | ヘッダーに「入出金振替操作履歴」を含む |
-| 配当金CSV | ヘッダーに「検索件数」+「受渡日」を含む |
+| 保有銘柄HTML | `stock-holding-table` を含むHTML |
 
 すべてのファイルを `workspaces/<name>/input/sbi/` に配置するだけで OK です。
 
