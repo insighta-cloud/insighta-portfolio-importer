@@ -317,3 +317,31 @@ class InsightaClient:
             ]
         resp = self._request("POST", "/orders", json=body)
         return resp.json() if resp.text else {}
+
+    def get_orders(
+        self,
+        portfolio_id: str | None = None,
+        order_ids: list[str] | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        status: str | None = None,
+    ) -> dict:
+        """GET /orders → retrieve orders by portfolio_id or order_ids."""
+        params = {k: v for k, v in {
+            "portfolio_id": portfolio_id,
+            "order_ids": ",".join(order_ids) if order_ids else None,
+            "limit": str(limit) if limit else None,
+            "cursor": cursor,
+            "start_date": start_date,
+            "end_date": end_date,
+            "status": status,
+        }.items() if v is not None}
+        resp = self._request("GET", "/orders", params=params)
+        return resp.json()
+
+    def backfill_history(self, portfolio_id: str) -> dict:
+        """POST /portfolios/{portfolio_id}/history-backfill → trigger NAV backfill."""
+        resp = self._request("POST", f"/portfolios/{portfolio_id}/history-backfill")
+        return resp.json()
